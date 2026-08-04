@@ -6,15 +6,15 @@ Repository ufficiale per il download delle versioni di **Mac PDF Editor**.
 
 Scarica sempre la versione più recente dalla pagina [Releases](https://github.com/Trader855/PDF/releases/latest).
 
-## Funzioni principali della versione 1.2.0
+## Funzioni principali della versione 1.2.1
 
 - sblocco dei PDF protetti quando si conosce la password;
 - riordino, inserimento, rotazione, duplicazione, estrazione ed eliminazione delle pagine;
 - annulla e ripristina le modifiche;
-- aggiunta e modifica di testo e immagini;
+- aggiunta e modifica di testo e immagini, incluso il testo riconosciuto dentro immagini incorporate;
 - firme digitate o disegnate, con libreria locale di firme e timbri riutilizzabili;
 - evidenziatore, penna libera, frecce e rettangoli;
-- compilazione dei moduli PDF;
+- creazione e compilazione di campi modulo PDF interattivi;
 - compressione ottimizzata per l'invio via e-mail;
 - OCR locale in italiano e inglese per rendere ricercabili le scansioni.
 
