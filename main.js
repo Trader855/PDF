@@ -6,6 +6,7 @@ const fs = require('fs');
 const path = require('path');
 
 const SOURCE_CODE_URL = 'https://github.com/Trader855/PDF';
+const TOMORROW_NOW_URL = 'https://www.tomorrownow.tech';
 const BACKEND_API_TOKEN = crypto.randomBytes(32).toString('hex');
 
 app.setName('Tomorrow Now PDF Editor');
@@ -252,6 +253,10 @@ function configureApplicationMenu() {
           label: 'Codice sorgente e licenze…',
           click: () => shell.openExternal(SOURCE_CODE_URL),
         },
+        {
+          label: 'Scopri Tomorrow Now…',
+          click: () => shell.openExternal(TOMORROW_NOW_URL),
+        },
         { type: 'separator' },
         { label: `Versione ${app.getVersion()}`, enabled: false },
       ],
@@ -313,6 +318,15 @@ function assertTrustedSender(event) {
 ipcMain.handle('backend-api-token', (event) => {
   assertTrustedSender(event);
   return BACKEND_API_TOKEN;
+});
+
+ipcMain.handle('open-external-url', async (event, externalUrl) => {
+  assertTrustedSender(event);
+  if (![SOURCE_CODE_URL, TOMORROW_NOW_URL].includes(externalUrl)) {
+    throw new Error('Collegamento esterno non autorizzato');
+  }
+  await shell.openExternal(externalUrl);
+  return true;
 });
 
 ipcMain.handle('read-local-file', async (event, filePath) => {

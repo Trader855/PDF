@@ -14,7 +14,7 @@ Scarica sempre la versione più recente dalla pagina [Releases](https://github.c
 Accanto a ogni pacchetto è indicato il tag del relativo
 [codice sorgente](https://github.com/Trader855/PDF).
 
-## Funzioni principali della versione 1.5.0
+## Funzioni principali della versione 1.5.1
 
 - sblocco dei PDF protetti quando si conosce la password;
 - riordino, inserimento, rotazione, duplicazione, estrazione ed eliminazione delle pagine;
@@ -31,6 +31,8 @@ Accanto a ogni pacchetto è indicato il tag del relativo
 - comando **Aiuto → Controlla aggiornamenti…** nella barra menu di macOS.
 - comando **Aiuto → Codice sorgente e licenze…** sempre collegato a questo
   repository pubblico;
+- barra Tomorrow Now sempre visibile in fondo all'app, con collegamento sicuro
+  al sito ufficiale;
 - renderer Electron isolato e sandboxed, senza accesso diretto a Node.js;
 - backend su `127.0.0.1` protetto da un token casuale per ogni avvio e da una
   policy CORS limitata all'app locale.

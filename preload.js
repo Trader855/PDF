@@ -7,6 +7,9 @@ contextBridge.exposeInMainWorld('desktopAPI', Object.freeze({
   getBackendToken() {
     return ipcRenderer.invoke('backend-api-token');
   },
+  openExternal(externalUrl) {
+    return ipcRenderer.invoke('open-external-url', externalUrl);
+  },
   readFile(filePath) {
     return ipcRenderer.invoke('read-local-file', filePath);
   },

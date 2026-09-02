@@ -47,9 +47,69 @@
 
     .app-shell {
       display: grid;
-      grid-template-rows: 64px minmax(0, 1fr);
+      grid-template-rows: 64px minmax(0, 1fr) 48px;
       height: 100vh;
     }
+
+    .tomorrow-now-banner {
+      position: relative;
+      z-index: 35;
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      align-items: center;
+      gap: 12px;
+      width: 100%;
+      min-width: 0;
+      padding: 0 18px;
+      overflow: hidden;
+      cursor: pointer;
+      border: 0;
+      border-top: 1px solid rgb(92 135 255 / 25%);
+      background:
+        radial-gradient(circle at 8% 50%, rgb(0 229 255 / 19%), transparent 24%),
+        radial-gradient(circle at 88% 20%, rgb(255 92 230 / 16%), transparent 28%),
+        linear-gradient(110deg, #08101d, #11152b 58%, #1b1027);
+      color: white;
+      text-align: left;
+      box-shadow: 0 -8px 28px rgb(32 48 88 / 10%);
+    }
+
+    .tomorrow-now-banner::after {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      background: linear-gradient(100deg, transparent, rgb(255 255 255 / 5%), transparent 68%);
+      content: "";
+    }
+
+    .tomorrow-now-logo {
+      display: grid;
+      place-items: center;
+      width: 30px;
+      height: 30px;
+      border: 1px solid rgb(0 229 255 / 45%);
+      border-radius: 9px;
+      background: linear-gradient(145deg, #071329, #15102d);
+      color: transparent;
+      font-size: 12px;
+      font-weight: 850;
+      letter-spacing: -.08em;
+      background-clip: padding-box;
+      box-shadow: 0 0 18px rgb(0 102 255 / 22%);
+    }
+
+    .tomorrow-now-logo span {
+      background: linear-gradient(100deg, #00e5ff, #0066ff 42%, #9b5cff 72%, #ff5ce6);
+      color: transparent;
+      background-clip: text;
+      -webkit-background-clip: text;
+    }
+
+    .tomorrow-now-copy { min-width: 0; }
+    .tomorrow-now-copy strong { display: block; font-size: 11px; letter-spacing: .01em; }
+    .tomorrow-now-copy span { display: block; margin-top: 1px; overflow: hidden; color: #8f9ab0; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+    .tomorrow-now-cta { color: #b9c7e7; font-size: 10px; font-weight: 700; transition: color .15s ease, transform .15s ease; }
+    .tomorrow-now-banner:hover .tomorrow-now-cta { color: #56e7ff; transform: translateX(2px); }
 
     .app-header {
       z-index: 30;
@@ -1126,6 +1186,7 @@
       .app-header { grid-template-columns: 190px minmax(180px, 1fr) 250px; }
       .brand span { display: none; }
       .workspace-toolbar { max-width: calc(100vw - 520px); }
+      .tomorrow-now-copy span { display: none; }
     }
   </style>
 </head>
@@ -1376,6 +1437,14 @@
         </div>
       </aside>
     </div>
+    <button id="tomorrow-now-banner" class="tomorrow-now-banner" type="button" aria-label="Visita il sito Tomorrow Now">
+      <span class="tomorrow-now-logo" aria-hidden="true"><span>TN</span></span>
+      <span class="tomorrow-now-copy">
+        <strong>Progettato e sviluppato da Tomorrow Now</strong>
+        <span>Software che semplifica il lavoro di domani · Software that powers what’s next.</span>
+      </span>
+      <span class="tomorrow-now-cta">Scopri Tomorrow Now →</span>
+    </button>
   </div>
 
   <dialog id="unlock-dialog">

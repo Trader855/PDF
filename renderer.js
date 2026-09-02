@@ -1,6 +1,7 @@
 const API_BASE = "http://127.0.0.1:8000";
 const MAX_PDF_SCALE = 1.5;
 const THUMBNAIL_WIDTH = 145;
+const TOMORROW_NOW_URL = "https://www.tomorrownow.tech";
 const appBridge = window.desktopAPI || null;
 const pdfjsLib = window.pdfjsLib || null;
 let backendApiToken = "";
@@ -99,6 +100,7 @@ const ui = {
   imageInput: document.querySelector("#image-file-input"),
   annotationButton: document.querySelector("#annotation-mode"),
   checkUpdatesButton: document.querySelector("#check-updates"),
+  tomorrowNowBanner: document.querySelector("#tomorrow-now-banner"),
   updateBadge: document.querySelector("#update-badge"),
   updateLabel: document.querySelector("#update-label"),
   updateDialog: document.querySelector("#update-dialog"),
@@ -2786,6 +2788,16 @@ ui.saveButton.addEventListener("click", () => {
   savePdfAs().catch((error) => {
     console.error(error);
     setStatus(`Salvataggio non riuscito: ${error.message}`, true);
+  });
+});
+
+ui.tomorrowNowBanner.addEventListener("click", () => {
+  if (!appBridge) {
+    setStatus("Il collegamento a Tomorrow Now è disponibile nell’app Mac installata.", true);
+    return;
+  }
+  appBridge.openExternal(TOMORROW_NOW_URL).catch((error) => {
+    setStatus(`Impossibile aprire Tomorrow Now: ${error.message}`, true);
   });
 });
 
