@@ -1,0 +1,4 @@
+allowBuilds:
+  canvas: false
+  electron: true
+  electron-winstaller: set this to true or false

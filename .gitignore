@@ -1,0 +1,41 @@
+.DS_Store
+.idea/
+.vscode/
+
+# JavaScript dependencies and package-manager caches
+node_modules/
+.pnpm-store/
+
+# Python environments and generated caches
+.build-venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Build and release artifacts
+dist/
+release/
+Mac PDF Editor.app/
+Tomorrow Now PDF Editor.app/
+build/mac-pdf-backend/
+build/icon.iconset/
+build/icon.icns
+build/icon_1024_previous.png
+*.spec
+
+# Generated QA files
+tmp/
+
+# The browser edition is maintained and deployed separately
+web-site/
+
+# Local credentials and signing material must never be published
+.env
+.env.*
+!.env.example
+*.p8
+*.p12
+*.cer
+*.mobileprovision
+*.key
+*.pem

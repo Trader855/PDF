@@ -1,0 +1,114 @@
+{
+  "name": "mac-pdf-editor",
+  "version": "1.4.1",
+  "description": "Editor PDF locale per macOS con pagine, annotazioni, moduli, firme, compressione e OCR",
+  "author": "Lettera Insurance Broker",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "backend": "python3 backend/main.py",
+    "test": "pnpm run test:backend && pnpm run test:js",
+    "test:backend": ".build-venv/bin/python -m unittest discover -s tests -v",
+    "test:js": "ELECTRON_RUN_AS_NODE=1 electron --check main.js && ELECTRON_RUN_AS_NODE=1 electron --check renderer.js",
+    "test:real-pdf": ".build-venv/bin/python -m unittest discover -s tests -v",
+    "test:packaged": ".build-venv/bin/python scripts/qa_packaged_backend.py",
+    "qa:release": "pnpm run test && pnpm run build:all && pnpm run dist:mac && pnpm run finalize:dmg && pnpm run test:packaged",
+    "build:ocr": "CLANG_MODULE_CACHE_PATH=/tmp/mac-pdf-editor-clang-cache xcrun clang -fobjc-arc -framework Foundation -framework AppKit -framework Vision scripts/mac_pdf_ocr.m -O2 -o dist/mac-pdf-ocr",
+    "build:backend": "PYINSTALLER_CONFIG_DIR=/tmp/mac-pdf-editor-pyinstaller-cache .build-venv/bin/pyinstaller --noconfirm --clean --onefile --name mac-pdf-backend backend/main.py",
+    "build:all": "pnpm run build:ocr && pnpm run build:backend",
+    "dist:mac": "electron-builder --mac dmg zip --arm64",
+    "finalize:dmg": "node scripts/finalize_dmg.js"
+  },
+  "devDependencies": {
+    "@electron/notarize": "2.5.0",
+    "electron": "^28.2.0",
+    "electron-builder": "^26.15.3"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.9",
+    "pdfjs-dist": "^3.11.174"
+  },
+  "build": {
+    "appId": "it.lettera.macpdfeditor",
+    "productName": "Mac PDF Editor",
+    "asar": true,
+    "npmRebuild": false,
+    "afterSign": "scripts/notarize.js",
+    "artifactName": "Mac-PDF-Editor-${version}-${arch}.${ext}",
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "Trader855",
+        "repo": "PDF",
+        "releaseType": "release"
+      }
+    ],
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.js",
+      "renderer.js",
+      "index.html",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "dist/mac-pdf-backend",
+        "to": "backend/mac-pdf-backend"
+      },
+      {
+        "from": "dist/mac-pdf-ocr",
+        "to": "backend/mac-pdf-ocr"
+      },
+      {
+        "from": "assets/fonts",
+        "to": "fonts"
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "icon": "build/icon_1024.png",
+      "identity": "Gabriele Lettera (58WG2698V4)",
+      "hardenedRuntime": true,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ]
+    },
+    "dmg": {
+      "title": "Mac PDF Editor ${version}",
+      "iconSize": 112,
+      "window": {
+        "width": 560,
+        "height": 380
+      },
+      "contents": [
+        {
+          "x": 150,
+          "y": 190,
+          "type": "file"
+        },
+        {
+          "x": 410,
+          "y": 190,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
+    }
+  }
+}
