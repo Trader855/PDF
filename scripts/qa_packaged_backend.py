@@ -3,6 +3,7 @@
 
 import json
 import os
+import secrets
 import socket
 import subprocess
 import tempfile
@@ -26,6 +27,7 @@ APP_RESOURCES = (
 BACKEND = APP_RESOURCES / "backend" / "mac-pdf-backend"
 FONTS = APP_RESOURCES / "fonts"
 API_BASE = "http://127.0.0.1:8000"
+API_TOKEN = secrets.token_hex(32)
 BASELINE_TEXT = "0123456789 ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz àèéìòù €%"
 
 
@@ -35,7 +37,10 @@ def request_json(method: str, endpoint: str, body=None, expected_status: int = 2
         API_BASE + endpoint,
         data=data,
         method=method,
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {API_TOKEN}",
+        },
     )
     try:
         with urllib.request.urlopen(request, timeout=5) as response:
@@ -136,6 +141,7 @@ def main() -> None:
     environment = os.environ.copy()
     environment["MAC_PDF_EDITOR_FONTS_DIR"] = str(FONTS)
     environment["MAC_PDF_EDITOR_PORT"] = str(backend_port)
+    environment["MAC_PDF_EDITOR_API_TOKEN"] = API_TOKEN
     process = subprocess.Popen(
         [str(BACKEND)],
         cwd=str(BACKEND.parent),
