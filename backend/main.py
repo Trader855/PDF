@@ -3,6 +3,7 @@ import binascii
 import json
 import os
 import re
+import secrets
 import subprocess
 import sys
 import tempfile
@@ -12,14 +13,15 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import fitz
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 
 app = FastAPI(title="Mac PDF Editor Backend")
 OCR_INSPECTION_CACHE: Dict[Tuple[str, int, int, int], List[Dict[str, Any]]] = {}
+API_TOKEN = os.environ.get("MAC_PDF_EDITOR_API_TOKEN", "")
 
 BUNDLED_FONT_CATALOG: List[Dict[str, Any]] = [
     {
@@ -91,11 +93,25 @@ FONT_STYLE_LABELS = {
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=["null"],
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
+
+
+@app.middleware("http")
+async def require_local_session_token(request: Request, call_next):
+    """Blocca l'API locale agli altri siti e processi non autorizzati."""
+    if request.method == "OPTIONS":
+        return await call_next(request)
+    if not API_TOKEN:
+        return JSONResponse(status_code=503, content={"detail": "Sessione locale non inizializzata"})
+    authorization = request.headers.get("authorization", "")
+    scheme, _, supplied_token = authorization.partition(" ")
+    if scheme.casefold() != "bearer" or not secrets.compare_digest(supplied_token, API_TOKEN):
+        return JSONResponse(status_code=401, content={"detail": "Sessione locale non autorizzata"})
+    return await call_next(request)
 
 
 class InspectRequest(BaseModel):

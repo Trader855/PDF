@@ -1,8 +1,14 @@
-const { app, BrowserWindow, dialog, ipcMain, Menu } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, Menu, shell } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const { spawn } = require('child_process');
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+
+const SOURCE_CODE_URL = 'https://github.com/Trader855/PDF';
+const BACKEND_API_TOKEN = crypto.randomBytes(32).toString('hex');
+
+app.setName('Tomorrow Now PDF Editor');
 
 let pyProc = null;
 let mainWindow = null;
@@ -43,6 +49,7 @@ function startBackend() {
       ...process.env,
       PYTHONUNBUFFERED: '1',
       MAC_PDF_EDITOR_FONTS_DIR: fontsDirectory,
+      MAC_PDF_EDITOR_API_TOKEN: BACKEND_API_TOKEN,
     },
   });
 
@@ -241,6 +248,10 @@ function configureApplicationMenu() {
             checkForAppUpdate(true).catch((error) => console.error('Controllo aggiornamenti:', error));
           },
         },
+        {
+          label: 'Codice sorgente e licenze…',
+          click: () => shell.openExternal(SOURCE_CODE_URL),
+        },
         { type: 'separator' },
         { label: `Versione ${app.getVersion()}`, enabled: false },
       ],
@@ -255,11 +266,19 @@ function createWindow() {
     height: 850,
     titleBarStyle: 'hiddenInset',
     webPreferences: {
-      nodeIntegration: true,
-      contextIsolation: false
-    }
+      preload: path.join(__dirname, 'preload.js'),
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true,
+      webSecurity: true,
+    },
   });
 
+  mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  mainWindow.webContents.on('will-navigate', (event, navigationUrl) => {
+    const expectedUrl = new URL(`file://${path.join(__dirname, 'index.html')}`).href;
+    if (navigationUrl !== expectedUrl) event.preventDefault();
+  });
   mainWindow.loadFile('index.html');
   mainWindow.webContents.once('did-finish-load', () => {
     sendUpdateState();
@@ -285,7 +304,42 @@ app.on('second-instance', () => {
   mainWindow.focus();
 });
 
-ipcMain.handle('save-pdf-as', async (_event, defaultName) => {
+function assertTrustedSender(event) {
+  if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) {
+    throw new Error('Richiesta IPC non autorizzata');
+  }
+}
+
+ipcMain.handle('backend-api-token', (event) => {
+  assertTrustedSender(event);
+  return BACKEND_API_TOKEN;
+});
+
+ipcMain.handle('read-local-file', async (event, filePath) => {
+  assertTrustedSender(event);
+  if (typeof filePath !== 'string' || !filePath) throw new Error('Percorso file non valido');
+  if (path.extname(filePath).toLowerCase() !== '.pdf') throw new Error('È consentita soltanto la lettura di file PDF');
+  const stats = await fs.promises.stat(filePath);
+  if (!stats.isFile()) throw new Error('Il percorso selezionato non è un file');
+  return fs.promises.readFile(filePath);
+});
+
+ipcMain.handle('copy-local-file', async (event, sourcePath, destinationPath) => {
+  assertTrustedSender(event);
+  if (typeof sourcePath !== 'string' || typeof destinationPath !== 'string') {
+    throw new Error('Percorso file non valido');
+  }
+  if (path.extname(sourcePath).toLowerCase() !== '.pdf' || path.extname(destinationPath).toLowerCase() !== '.pdf') {
+    throw new Error('È consentita soltanto la copia di file PDF');
+  }
+  const sourceStats = await fs.promises.stat(sourcePath);
+  if (!sourceStats.isFile()) throw new Error('Il file sorgente non esiste');
+  await fs.promises.copyFile(sourcePath, destinationPath);
+  return true;
+});
+
+ipcMain.handle('save-pdf-as', async (event, defaultName) => {
+  assertTrustedSender(event);
   const result = await dialog.showSaveDialog({
     title: 'Salva una nuova versione del PDF',
     defaultPath: defaultName,
@@ -295,13 +349,18 @@ ipcMain.handle('save-pdf-as', async (_event, defaultName) => {
   return result.canceled ? null : result.filePath;
 });
 
-ipcMain.handle('get-update-status', () => updateState);
+ipcMain.handle('get-update-status', (event) => {
+  assertTrustedSender(event);
+  return updateState;
+});
 
-ipcMain.handle('check-for-updates', (_event, options = {}) => {
+ipcMain.handle('check-for-updates', (event, options = {}) => {
+  assertTrustedSender(event);
   return checkForAppUpdate(Boolean(options.manual));
 });
 
-ipcMain.handle('download-update', async () => {
+ipcMain.handle('download-update', async (event) => {
+  assertTrustedSender(event);
   if (!app.isPackaged) return checkForAppUpdate(true);
   if (updateState.phase !== 'available') return updateState;
   sendUpdateState({ phase: 'downloading', manual: true, percent: 0, error: '' });
@@ -313,7 +372,8 @@ ipcMain.handle('download-update', async () => {
   return updateState;
 });
 
-ipcMain.handle('install-update', () => {
+ipcMain.handle('install-update', (event) => {
+  assertTrustedSender(event);
   if (!app.isPackaged || updateState.phase !== 'downloaded') return false;
   stopBackend();
   setImmediate(() => autoUpdater.quitAndInstall(false, true));

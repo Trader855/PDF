@@ -14,7 +14,7 @@ Scarica sempre la versione più recente dalla pagina [Releases](https://github.c
 Accanto a ogni pacchetto è indicato il tag del relativo
 [codice sorgente](https://github.com/Trader855/PDF).
 
-## Funzioni principali
+## Funzioni principali della versione 1.5.0
 
 - sblocco dei PDF protetti quando si conosce la password;
 - riordino, inserimento, rotazione, duplicazione, estrazione ed eliminazione delle pagine;
@@ -29,6 +29,11 @@ Accanto a ogni pacchetto è indicato il tag del relativo
 - ricerca in tutto il documento con `⌘F`, evidenziazione dei risultati e navigazione avanti/indietro;
 - controllo automatico discreto degli aggiornamenti GitHub, con indicatore “Aggiorna”, download su conferma e installazione al riavvio;
 - comando **Aiuto → Controlla aggiornamenti…** nella barra menu di macOS.
+- comando **Aiuto → Codice sorgente e licenze…** sempre collegato a questo
+  repository pubblico;
+- renderer Electron isolato e sandboxed, senza accesso diretto a Node.js;
+- backend su `127.0.0.1` protetto da un token casuale per ogni avvio e da una
+  policy CORS limitata all'app locale.
 
 ## Sviluppo locale
 
@@ -68,7 +73,10 @@ La versione attuale è compatibile con Mac Apple Silicon (M1, M2, M3, M4 e succe
 
 1. Scarica il file DMG dalla release più recente.
 2. Apri il DMG.
-3. Trascina **Tomorrow Now PDF Editor** nella cartella **Applicazioni**.
+3. Trascina **Mac PDF Editor** nella cartella **Applicazioni**. Nell'app e nella
+   nuova icona troverai il marchio **Tomorrow Now PDF Editor**. Il nome del
+   pacchetto resta invariato in questa release per non interrompere gli
+   aggiornamenti automatici delle installazioni esistenti.
 
 La versione distribuita è firmata con Developer ID, notarizzata da Apple e
 verificata da Gatekeeper.

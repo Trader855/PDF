@@ -1,35 +1,52 @@
 const API_BASE = "http://127.0.0.1:8000";
 const MAX_PDF_SCALE = 1.5;
 const THUMBNAIL_WIDTH = 145;
-const PDFJS_CDN = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174";
+const appBridge = window.desktopAPI || null;
+const pdfjsLib = window.pdfjsLib || null;
+let backendApiToken = "";
 
-let fs = null;
-let path = null;
-let ipcRenderer = null;
-let pdfjsLib = window.pdfjsLib || null;
-let usesLocalPdfJs = false;
-
-if (typeof require === "function") {
-  try {
-    fs = require("node:fs");
-    path = require("node:path");
-    ({ ipcRenderer } = require("electron"));
-  } catch (error) {
-    console.warn("API Electron non disponibili:", error.message);
-  }
-
-  try {
-    pdfjsLib = require("pdfjs-dist/build/pdf.js");
-    usesLocalPdfJs = true;
-  } catch (error) {
-    console.warn("pdfjs-dist locale non disponibile, uso la CDN:", error.message);
-  }
-}
+const filePaths = Object.freeze({
+  normalize(value) {
+    const source = String(value || "");
+    const absolute = source.startsWith("/");
+    const parts = [];
+    source.split("/").forEach((part) => {
+      if (!part || part === ".") return;
+      if (part === "..") parts.pop();
+      else parts.push(part);
+    });
+    return `${absolute ? "/" : ""}${parts.join("/")}` || (absolute ? "/" : ".");
+  },
+  basename(value) {
+    const normalized = this.normalize(value).replace(/\/$/, "");
+    return normalized.slice(normalized.lastIndexOf("/") + 1);
+  },
+  dirname(value) {
+    const normalized = this.normalize(value).replace(/\/$/, "");
+    const index = normalized.lastIndexOf("/");
+    if (index < 0) return ".";
+    return index === 0 ? "/" : normalized.slice(0, index);
+  },
+  parse(value) {
+    const base = this.basename(value);
+    const dot = base.lastIndexOf(".");
+    const hasExtension = dot > 0;
+    return {
+      base,
+      name: hasExtension ? base.slice(0, dot) : base,
+      ext: hasExtension ? base.slice(dot) : "",
+    };
+  },
+  join(...parts) {
+    return this.normalize(parts.filter(Boolean).join("/"));
+  },
+  resolve(value) {
+    return this.normalize(value);
+  },
+});
 
 if (pdfjsLib) {
-  pdfjsLib.GlobalWorkerOptions.workerSrc = usesLocalPdfJs
-    ? require.resolve("pdfjs-dist/build/pdf.worker.js")
-    : `${PDFJS_CDN}/pdf.worker.min.js`;
+  pdfjsLib.GlobalWorkerOptions.workerSrc = "node_modules/pdfjs-dist/build/pdf.worker.js";
 }
 
 const ui = {
@@ -465,9 +482,16 @@ function setStatus(message = "", isError = false) {
 async function ensureBackend() {
   if (state.backendReady) return;
 
+  if (!appBridge) {
+    throw new Error("il backend locale è disponibile soltanto nell’app Mac installata");
+  }
+  if (!backendApiToken) backendApiToken = await appBridge.getBackendToken();
+
   for (let attempt = 0; attempt < 60; attempt += 1) {
     try {
-      const response = await fetch(`${API_BASE}/health`);
+      const response = await fetch(`${API_BASE}/health`, {
+        headers: { Authorization: `Bearer ${backendApiToken}` },
+      });
       if (response.ok) {
         state.backendReady = true;
         return;
@@ -481,12 +505,18 @@ async function ensureBackend() {
   throw new Error("backend Python non raggiungibile. Avvia l'app con “npm start”, non aprendo index.html nel browser");
 }
 
-async function apiRequest(endpoint, options) {
+async function apiRequest(endpoint, options = {}) {
   await ensureBackend();
   let response;
 
   try {
-    response = await fetch(`${API_BASE}${endpoint}`, options);
+    response = await fetch(`${API_BASE}${endpoint}`, {
+      ...options,
+      headers: {
+        ...(options.headers || {}),
+        Authorization: `Bearer ${backendApiToken}`,
+      },
+    });
   } catch (error) {
     state.backendReady = false;
     throw new Error(`connessione al backend interrotta: ${error.message}`);
@@ -1005,7 +1035,7 @@ async function openPdf(filePath, file = null) {
     state.pdf = null;
     state.originalPath = filePath;
     state.workingPath = "";
-    state.originalName = file?.name || (path ? path.basename(filePath) : filePath);
+    state.originalName = file?.name || filePaths.basename(filePath);
     state.lockedPath = filePath;
     state.lockedName = state.originalName;
     state.encrypted = true;
@@ -1035,8 +1065,8 @@ async function openPdf(filePath, file = null) {
   let pdfData;
   if (file) {
     pdfData = new Uint8Array(await file.arrayBuffer());
-  } else if (fs) {
-    pdfData = new Uint8Array(fs.readFileSync(filePath));
+  } else if (appBridge) {
+    pdfData = new Uint8Array(await appBridge.readFile(filePath));
   } else {
     throw new Error("Impossibile leggere il file senza Electron");
   }
@@ -1044,7 +1074,7 @@ async function openPdf(filePath, file = null) {
   await loadPdfData(pdfData);
   state.originalPath = filePath;
   state.workingPath = "";
-  state.originalName = file?.name || (path ? path.basename(filePath) : filePath);
+  state.originalName = file?.name || filePaths.basename(filePath);
   state.pageNumber = 1;
   state.editMode = false;
   state.activeTool = null;
@@ -1088,7 +1118,8 @@ async function openPdf(filePath, file = null) {
 
 async function reloadWorkingCopy(pageNumber) {
   resetDocumentSearch({ close: true });
-  const pdfData = new Uint8Array(fs.readFileSync(state.workingPath));
+  if (!appBridge) throw new Error("Impossibile leggere la copia locale senza Electron");
+  const pdfData = new Uint8Array(await appBridge.readFile(state.workingPath));
   await loadPdfData(pdfData);
   state.pageNumber = Math.min(pageNumber, state.pdf.numPages);
   renderThumbnails().catch((error) => console.warn("Miniature non disponibili:", error));
@@ -1809,13 +1840,12 @@ async function performPageOperation(action) {
   });
 
   if (action === "extract") {
-    const parsed = path.parse(state.originalName || "documento.pdf");
-    const destination = await ipcRenderer.invoke(
-      "save-pdf-as",
-      path.join(path.dirname(state.originalPath), `${parsed.name} - pagina ${state.pageNumber}.pdf`),
+    const parsed = filePaths.parse(state.originalName || "documento.pdf");
+    const destination = await appBridge.savePdfAs(
+      filePaths.join(filePaths.dirname(state.originalPath), `${parsed.name} - pagina ${state.pageNumber}.pdf`),
     );
     if (destination) {
-      fs.copyFileSync(result.output_path, destination);
+      await appBridge.copyFile(result.output_path, destination);
       setStatus(`Pagina estratta e salvata: ${destination}`);
     }
     return;
@@ -2183,35 +2213,34 @@ async function savePdfAs() {
   if (!state.workingPath) {
     throw new Error("non ci sono ancora modifiche da salvare");
   }
-  if (!ipcRenderer || !fs || !path) {
+  if (!appBridge) {
     throw new Error("il salvataggio richiede l'avvio come applicazione Electron");
   }
 
-  const parsedName = path.parse(state.originalName || "documento.pdf");
-  const defaultName = path.join(
-    path.dirname(state.originalPath),
+  const parsedName = filePaths.parse(state.originalName || "documento.pdf");
+  const defaultName = filePaths.join(
+    filePaths.dirname(state.originalPath),
     `${parsedName.name} - modificato.pdf`,
   );
-  const destination = await ipcRenderer.invoke("save-pdf-as", defaultName);
+  const destination = await appBridge.savePdfAs(defaultName);
   if (!destination) return;
 
-  if (path.resolve(destination) !== path.resolve(state.workingPath)) {
-    fs.copyFileSync(state.workingPath, destination);
+  if (filePaths.resolve(destination) !== filePaths.resolve(state.workingPath)) {
+    await appBridge.copyFile(state.workingPath, destination);
   }
   setStatus(`Nuova versione salvata: ${destination}`);
 }
 
 function getLocalFilePath(file) {
-  if (file?.path) return file.path;
-  if (typeof require === "function") {
-    try {
-      const { webUtils } = require("electron");
-      return webUtils?.getPathForFile(file) || "";
-    } catch (error) {
-      console.warn("Percorso locale non disponibile:", error.message);
-    }
+  if (!file) return "";
+  if (typeof file.path === "string" && file.path) return file.path;
+  if (!appBridge) return "";
+  try {
+    return appBridge.getPathForFile(file) || "";
+  } catch (error) {
+    console.warn("Percorso locale non disponibile:", error.message);
+    return "";
   }
-  return "";
 }
 
 ui.openButton.addEventListener("click", () => ui.fileInput.click());
@@ -2760,15 +2789,15 @@ ui.saveButton.addEventListener("click", () => {
   });
 });
 
-if (ipcRenderer) {
-  ipcRenderer.on("update-status", (_event, status) => renderUpdateStatus(status));
-  ipcRenderer.invoke("get-update-status")
+if (appBridge) {
+  appBridge.onUpdateStatus((status) => renderUpdateStatus(status));
+  appBridge.getUpdateStatus()
     .then((status) => renderUpdateStatus(status))
     .catch((error) => console.warn("Stato aggiornamenti non disponibile:", error.message));
 }
 
 ui.checkUpdatesButton.addEventListener("click", () => {
-  if (!ipcRenderer) {
+  if (!appBridge) {
     renderUpdateStatus({ phase: "error", manual: true, error: "Il controllo è disponibile nell’app Mac installata." });
     return;
   }
@@ -2777,7 +2806,7 @@ ui.checkUpdatesButton.addEventListener("click", () => {
     phase: "checking",
     manual: true,
   });
-  ipcRenderer.invoke("check-for-updates", { manual: true })
+  appBridge.checkForUpdates({ manual: true })
     .then((status) => renderUpdateStatus(status))
     .catch((error) => renderUpdateStatus({ phase: "error", manual: true, error: error.message }));
 });
@@ -2785,18 +2814,18 @@ ui.checkUpdatesButton.addEventListener("click", () => {
 ui.updateLaterButton.addEventListener("click", () => ui.updateDialog.close());
 
 ui.downloadUpdateButton.addEventListener("click", () => {
-  if (!ipcRenderer) return;
+  if (!appBridge) return;
   ui.downloadUpdateButton.disabled = true;
-  ipcRenderer.invoke("download-update")
+  appBridge.downloadUpdate()
     .then((status) => renderUpdateStatus(status))
     .catch((error) => renderUpdateStatus({ phase: "error", manual: true, error: error.message }))
     .finally(() => { ui.downloadUpdateButton.disabled = false; });
 });
 
 ui.installUpdateButton.addEventListener("click", () => {
-  if (!ipcRenderer) return;
+  if (!appBridge) return;
   ui.installUpdateButton.disabled = true;
-  ipcRenderer.invoke("install-update").then((started) => {
+  appBridge.installUpdate().then((started) => {
     if (!started) {
       ui.installUpdateButton.disabled = false;
       renderUpdateStatus({ phase: "error", manual: true, error: "L’aggiornamento non è ancora pronto per l’installazione." });
