@@ -8,6 +8,11 @@ Questo repository contiene il sorgente completo dell'applicazione Mac ed è
 dedicato esclusivamente al PDF Editor. Sito istituzionale e altri prodotti
 Tomorrow Now sono mantenuti in repository separati.
 
+La versione browser è disponibile nel [ramo web indipendente](https://github.com/Trader855/PDF/tree/web).
+Non unire `web` in `main`: ha un proprio package manager e un proprio hosting.
+Questo ramo di lavoro contiene correzioni di sicurezza **non ancora distribuite
+in un nuovo DMG**. Consulta [SECURITY_CHANGES.md](SECURITY_CHANGES.md).
+
 ## Download
 
 Scarica sempre la versione più recente dalla pagina [Releases](https://github.com/Trader855/PDF/releases/latest).
@@ -34,12 +39,14 @@ Accanto a ogni pacchetto è indicato il tag del relativo
 - barra Tomorrow Now sempre visibile in fondo all'app, con collegamento sicuro
   al sito ufficiale;
 - renderer Electron isolato e sandboxed, senza accesso diretto a Node.js;
-- backend su `127.0.0.1` protetto da un token casuale per ogni avvio e da una
-  policy CORS limitata all'app locale.
+- backend su porta loopback assegnata dal sistema, con token casuale passato
+  tramite pipe privata e conservato solo nel processo principale;
+- letture e salvataggi limitati ai documenti autorizzati tramite selezione
+  file e al percorso confermato nel dialogo nativo di salvataggio.
 
 ## Sviluppo locale
 
-Requisiti: Node.js, pnpm e Python 3.9 o successivo.
+Requisiti: Node.js 22 o successivo, pnpm e Python 3.9 o successivo.
 
 ```sh
 pnpm install --frozen-lockfile
@@ -51,6 +58,26 @@ pnpm start
 Il repository non contiene certificati Apple, password del portachiavi o token
 GitHub. Firma e notarizzazione usano esclusivamente credenziali esterne fornite
 dall'ambiente di build.
+
+L'avvio di sviluppo usa `.build-venv/bin/python`, lo stesso ambiente dei test.
+Non avviare il backend a mano: richiede la pipe privata aperta da Electron.
+
+## Dati locali e limiti
+
+I PDF non vengono caricati online. Le copie di lavoro, anche quelle decifrate,
+sono conservate in una directory privata per sessione sotto i dati dell'app.
+Sono rimosse al cambio documento e all'uscita. Se il processo principale
+termina improvvisamente, il backend rileva la chiusura della pipe e termina;
+le sessioni abbandonate riconoscibili vengono ripulite all'avvio successivo.
+Questa pulizia non promette cancellazione forense da SSD, backup o swap.
+
+Il controllo aggiornamenti contatta GitHub all'avvio. I collegamenti esterni
+si aprono soltanto su richiesta. Firme e timbri salvati rimangono sul dispositivo
+finché l'utente non usa «Elimina firme salvate» nel relativo pannello.
+Limiti: PDF fino a 100 MB e 1000 pagine, OCR fino a 12 megapixel per pagina,
+timeout OCR di 20 secondi per pagina. Il limite complessivo di richiesta è
+120 secondi; al superamento la sessione viene arrestata. Questi limiti non
+costituiscono una garanzia contro ogni PDF malevolo.
 
 ## Controlli prima di una release
 

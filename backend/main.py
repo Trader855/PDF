@@ -1,12 +1,17 @@
 import base64
 import binascii
 import json
+import math
 import os
 import re
 import secrets
+import shutil
+import signal
+import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import uuid
 from collections import Counter
 from pathlib import Path
@@ -14,14 +19,19 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import fitz
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 
-app = FastAPI(title="Mac PDF Editor Backend")
+app = FastAPI(title="Mac PDF Editor Backend", docs_url=None, redoc_url=None, openapi_url=None)
 OCR_INSPECTION_CACHE: Dict[Tuple[str, int, int, int], List[Dict[str, Any]]] = {}
-API_TOKEN = os.environ.get("MAC_PDF_EDITOR_API_TOKEN", "")
+API_TOKEN = ""
+SESSION_DIRECTORY: Optional[Path] = None
+SESSION_ID = ""
+MAX_PDF_BYTES = 100 * 1024 * 1024
+MAX_PAGES = 1000
+MAX_REQUEST_BYTES = 36 * 1024 * 1024
+MAX_RENDER_PIXELS = 12_000_000
 
 BUNDLED_FONT_CATALOG: List[Dict[str, Any]] = [
     {
@@ -91,26 +101,30 @@ FONT_STYLE_LABELS = {
     "bold_italic": " Bold Italic",
 }
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["null"],
-    allow_credentials=False,
-    allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type"],
-)
-
-
 @app.middleware("http")
 async def require_local_session_token(request: Request, call_next):
-    """Blocca l'API locale agli altri siti e processi non autorizzati."""
+    """Solo il processo principale conosce il token, ricevuto attraverso stdin."""
     if request.method == "OPTIONS":
         return await call_next(request)
     if not API_TOKEN:
         return JSONResponse(status_code=503, content={"detail": "Sessione locale non inizializzata"})
     authorization = request.headers.get("authorization", "")
     scheme, _, supplied_token = authorization.partition(" ")
-    if scheme.casefold() != "bearer" or not secrets.compare_digest(supplied_token, API_TOKEN):
+    if scheme.casefold() != "bearer" or not secrets.compare_digest(supplied_token.encode("utf-8"), API_TOKEN.encode("utf-8")):
         return JSONResponse(status_code=401, content={"detail": "Sessione locale non autorizzata"})
+    if request.method == "POST":
+        body = bytearray()
+        async for chunk in request.stream():
+            body.extend(chunk)
+            if len(body) > MAX_REQUEST_BYTES:
+                return JSONResponse(status_code=413, content={"detail": "Richiesta troppo grande"})
+        request._body = bytes(body)
+        try:
+            payload = json.loads(body)
+        except (ValueError, UnicodeDecodeError):
+            return JSONResponse(status_code=400, content={"detail": "Richiesta JSON non valida"})
+        if not isinstance(payload, dict) or payload.get("output_path") is not None:
+            return JSONResponse(status_code=403, content={"detail": "Destinazione esterna non consentita"})
     return await call_next(request)
 
 
@@ -143,7 +157,7 @@ class EditTextRequest(BaseModel):
 class FindRepeatedTextRequest(BaseModel):
     file_path: str
     text: str = Field(min_length=1, max_length=2000)
-    include_ocr: bool = True
+    include_ocr: bool = False
 
 
 class BatchTextChange(BaseModel):
@@ -523,14 +537,7 @@ def resolve_text_font(
 
 
 def validate_document(file_path: str, page_num: int) -> Tuple[Path, fitz.Document]:
-    path = Path(file_path).expanduser().resolve()
-    if not path.is_file():
-        raise HTTPException(status_code=404, detail="File PDF non trovato")
-
-    try:
-        document = fitz.open(path)
-    except Exception as error:
-        raise HTTPException(status_code=400, detail=f"PDF non leggibile: {error}") from error
+    path, document = open_pdf_path(file_path)
 
     if document.needs_pass:
         document.close()
@@ -545,11 +552,16 @@ def validate_document(file_path: str, page_num: int) -> Tuple[Path, fitz.Documen
 
 def temporary_output_path(source: Path) -> Path:
     safe_stem = re.sub(r"[^a-zA-Z0-9._-]+", "-", source.stem).strip("-") or "documento"
-    return Path(tempfile.gettempdir()) / f"{safe_stem}-modificato-{uuid.uuid4().hex[:8]}.pdf"
+    directory = SESSION_DIRECTORY or Path(tempfile.gettempdir())
+    return directory / f"{safe_stem}-modificato-{uuid.uuid4().hex}.pdf"
 
 
 def resolved_output_path(source: Path, requested: Optional[str]) -> Path:
+    if SESSION_DIRECTORY is not None and requested is not None:
+        raise HTTPException(status_code=403, detail="Destinazione esterna non consentita")
     output_path = Path(requested).expanduser().resolve() if requested else temporary_output_path(source)
+    if output_path == source.resolve():
+        raise HTTPException(status_code=403, detail="Il documento originale non può essere sovrascritto dal backend")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     return output_path
 
@@ -567,13 +579,32 @@ def atomic_save(document: fitz.Document, output_path: Path, **options) -> None:
 
 
 def open_pdf_path(file_path: str, not_found_message: str = "File PDF non trovato") -> Tuple[Path, fitz.Document]:
-    path = Path(file_path).expanduser().resolve()
+    path = Path(file_path).expanduser()
+    if path.is_symlink() or path.suffix.casefold() != ".pdf":
+        raise HTTPException(status_code=400, detail="Seleziona un PDF, non un collegamento")
     if not path.is_file():
         raise HTTPException(status_code=404, detail=not_found_message)
+    path = path.resolve()
+    if path.stat().st_size > MAX_PDF_BYTES:
+        raise HTTPException(status_code=413, detail="Il PDF supera il limite di 100 MB")
     try:
-        return path, fitz.open(path)
+        document = fitz.open(path)
     except Exception as error:
-        raise HTTPException(status_code=400, detail=f"PDF non leggibile: {error}") from error
+        raise HTTPException(status_code=400, detail="PDF non leggibile o danneggiato") from error
+    if not document.is_pdf or (not document.needs_pass and document.page_count > MAX_PAGES):
+        document.close()
+        raise HTTPException(status_code=413, detail="Formato non PDF o documento oltre 1000 pagine")
+    return path, document
+
+
+def bounded_pixmap(page: fitz.Page):
+    area = page.rect.width * page.rect.height
+    if not math.isfinite(area) or area <= 0:
+        raise HTTPException(status_code=422, detail="Dimensioni della pagina non valide")
+    scale = min(2.0, math.sqrt(MAX_RENDER_PIXELS / area) * 0.99)
+    if scale < 0.05:
+        raise HTTPException(status_code=413, detail="Pagina troppo grande per l’OCR")
+    return page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
 
 
 def decode_image_data(image_data: str) -> bytes:
@@ -591,7 +622,7 @@ def decode_image_data(image_data: str) -> bytes:
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "pymupdf": fitz.VersionBind}
+    return {"status": "ok", "pymupdf": fitz.VersionBind, "session_id": SESSION_ID}
 
 
 @app.get("/fonts")
@@ -882,11 +913,14 @@ def compress_pdf(req: CompressRequest):
                     continue
                 visited.add(xref)
                 try:
+                    # Do not flatten transparency, convert CMYK, or decode huge images.
+                    if image[1] or image[2] * image[3] > MAX_RENDER_PIXELS or image[5] != "DeviceRGB":
+                        continue
                     pixmap = fitz.Pixmap(document, xref)
                     if pixmap.width * pixmap.height < 40_000 or pixmap.colorspace is None:
                         continue
                     if pixmap.alpha or pixmap.n > 3:
-                        pixmap = fitz.Pixmap(fitz.csRGB, pixmap)
+                        continue
                     if shrink and min(pixmap.width, pixmap.height) >= 600:
                         pixmap.shrink(shrink)
                     compressed = pixmap.tobytes("jpeg", jpg_quality=jpeg_quality)
@@ -975,15 +1009,15 @@ def ocr_spans_inside_images(source_path: Path, page_num: int, page: fitz.Page, n
         OCR_INSPECTION_CACHE[cache_key] = []
         return []
 
-    pixmap = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
-    with tempfile.TemporaryDirectory(prefix="mac-pdf-inspect-") as directory:
+    pixmap = bounded_pixmap(page)
+    with tempfile.TemporaryDirectory(prefix="mac-pdf-inspect-", dir=SESSION_DIRECTORY) as directory:
         image_path = Path(directory) / f"page-{page_num + 1}.png"
         pixmap.save(image_path)
         process = subprocess.run(
             [str(helper), str(image_path), "it-IT,en-US"],
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=20,
             check=False,
         )
     if process.returncode != 0:
@@ -1098,7 +1132,10 @@ def ocr_pdf(req: OcrRequest):
 
     recognized = 0
     skipped = 0
-    temp_dir = Path(tempfile.mkdtemp(prefix="mac-pdf-ocr-"))
+    if len(page_nums) > 12:
+        document.close()
+        raise HTTPException(status_code=413, detail="Esegui l’OCR su un massimo di 12 pagine per volta")
+    temp_dir = Path(tempfile.mkdtemp(prefix="mac-pdf-ocr-", dir=SESSION_DIRECTORY))
     try:
         for page_num in page_nums:
             page = document[page_num]
@@ -1106,12 +1143,12 @@ def ocr_pdf(req: OcrRequest):
                 skipped += 1
                 continue
             image_path = temp_dir / f"page-{page_num + 1}.png"
-            page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False).save(image_path)
+            bounded_pixmap(page).save(image_path)
             process = subprocess.run(
                 [str(helper), str(image_path), "it-IT,en-US"],
                 capture_output=True,
                 text=True,
-                timeout=120,
+                timeout=20,
                 check=False,
             )
             if process.returncode != 0:
@@ -1183,6 +1220,8 @@ def unlock_pdf(req: UnlockPdfRequest):
         if document.needs_pass and not document.authenticate(req.password):
             raise HTTPException(status_code=401, detail="Password non corretta")
         page_count = document.page_count
+        if page_count > MAX_PAGES:
+            raise HTTPException(status_code=413, detail="Il PDF supera il limite di 1000 pagine")
         atomic_save(document, output_path, encryption=fitz.PDF_ENCRYPT_NONE)
         return {"status": "ok", "output_path": str(output_path), "page_count": page_count}
     except HTTPException:
@@ -1231,6 +1270,8 @@ def insert_pdf(req: InsertPdfRequest):
         if req.insert_at < 0 or req.insert_at > document.page_count:
             raise HTTPException(status_code=400, detail="Posizione di inserimento non valida")
         inserted_count = inserted.page_count
+        if document.page_count + inserted_count > MAX_PAGES:
+            raise HTTPException(status_code=413, detail="L’unione supererebbe il limite di 1000 pagine")
         document.insert_pdf(inserted, start_at=req.insert_at)
         final_page_count = document.page_count
         inserted.close()
@@ -1265,6 +1306,15 @@ def add_image(req: AddImageRequest):
         if rect.is_empty or rect.is_infinite or not page.rect.contains(rect):
             raise HTTPException(status_code=400, detail="Posizione o dimensione dell'immagine non valida")
         image_bytes = decode_image_data(req.image_data)
+        try:
+            with fitz.open(stream=image_bytes) as image_document:
+                image_page = image_document[0]
+                if image_page.rect.width * image_page.rect.height > MAX_RENDER_PIXELS:
+                    raise HTTPException(status_code=413, detail="Immagine troppo grande")
+        except HTTPException:
+            raise
+        except Exception as error:
+            raise HTTPException(status_code=422, detail="Formato immagine non supportato") from error
         try:
             page.insert_image(rect, stream=image_bytes, keep_proportion=False, overlay=True)
         except Exception as error:
@@ -1440,6 +1490,11 @@ def batch_edit_text(req: BatchEditTextRequest):
             if req.new_text:
                 for change, font_resource, font_used in prepared_changes:
                     try:
+                        # Redaction may prune fonts registered during preflight.
+                        font_resource, font_used = resolve_text_font(
+                            page, change.font, font_resource, req.new_text,
+                            allow_original_resource=change.source != "ocr",
+                        )
                         page.insert_text(
                             fitz.Point(change.origin),
                             req.new_text,
@@ -1478,12 +1533,7 @@ def batch_edit_text(req: BatchEditTextRequest):
 @app.post("/edit-text")
 def edit_text(req: EditTextRequest):
     source_path, document = validate_document(req.file_path, req.page_num)
-    output_path = (
-        Path(req.output_path).expanduser().resolve()
-        if req.output_path
-        else temporary_output_path(source_path)
-    )
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path = resolved_output_path(source_path, req.output_path)
     save_path = output_path.with_name(f".{output_path.stem}-{uuid.uuid4().hex}.tmp.pdf")
 
     try:
@@ -1517,6 +1567,10 @@ def edit_text(req: EditTextRequest):
 
         if req.new_text:
             try:
+                font_resource, font_used = resolve_text_font(
+                    page, req.font, font_resource, req.new_text,
+                    allow_original_resource=not is_ocr_text,
+                )
                 page.insert_text(
                     fitz.Point(req.origin),
                     req.new_text,
@@ -1558,12 +1612,7 @@ def add_text(req: AddTextRequest):
         raise HTTPException(status_code=400, detail="Inserisci il testo da aggiungere")
 
     source_path, document = validate_document(req.file_path, req.page_num)
-    output_path = (
-        Path(req.output_path).expanduser().resolve()
-        if req.output_path
-        else temporary_output_path(source_path)
-    )
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path = resolved_output_path(source_path, req.output_path)
     save_path = output_path.with_name(f".{output_path.stem}-{uuid.uuid4().hex}.tmp.pdf")
 
     try:
@@ -1617,6 +1666,39 @@ def add_text(req: AddTextRequest):
 
 if __name__ == "__main__":
     import uvicorn
+    # Credentials never appear in environment variables, arguments or HTTP discovery.
+    config = json.loads(sys.stdin.readline(8192))
+    API_TOKEN = config["token"]
+    SESSION_ID = config["session_id"]
+    SESSION_DIRECTORY = Path(config["directory"]).resolve(strict=True)
+    if not re.fullmatch(r"[0-9a-f]{64}", API_TOKEN) or not SESSION_DIRECTORY.name.startswith("session-"):
+        raise SystemExit("Configurazione sessione non valida")
+    os.umask(0o077)
 
-    backend_port = int(os.environ.get("MAC_PDF_EDITOR_PORT", "8000"))
-    uvicorn.run(app, host="127.0.0.1", port=backend_port, log_level="info")
+    def watch_parent():
+        # Pipe EOF also occurs on a main-process crash, not only normal shutdown.
+        sys.stdin.read()
+        server.should_exit = True
+        # A stuck native PDF operation must not keep an orphan alive indefinitely.
+        def force_exit():
+            shutil.rmtree(SESSION_DIRECTORY, ignore_errors=True)
+            os._exit(0)
+        timer = threading.Timer(5, force_exit)
+        timer.daemon = True
+        timer.start()
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    sock.listen(128)
+    server = uvicorn.Server(uvicorn.Config(app, log_level="warning", access_log=False, limit_concurrency=4))
+    # Uvicorn replays captured signals after shutdown; avoid bypassing our finally.
+    signal.signal(signal.SIGTERM, lambda *_args: setattr(server, "should_exit", True))
+    with os.fdopen(3, "w", closefd=False) as ready_pipe:
+        ready_pipe.write(json.dumps({"port": sock.getsockname()[1], "session_id": SESSION_ID}) + "\n")
+        ready_pipe.flush()
+    threading.Thread(target=watch_parent, daemon=True).start()
+    try:
+        server.run(sockets=[sock])
+    finally:
+        sock.close()
+        shutil.rmtree(SESSION_DIRECTORY, ignore_errors=True)

@@ -1,17 +1,16 @@
 const { app, BrowserWindow, dialog, ipcMain, Menu, shell } = require('electron');
 const { autoUpdater } = require('electron-updater');
-const { spawn } = require('child_process');
-const crypto = require('crypto');
+const { BackendSession } = require('./desktop-security');
 const fs = require('fs');
 const path = require('path');
 
 const SOURCE_CODE_URL = 'https://github.com/Trader855/PDF';
 const TOMORROW_NOW_URL = 'https://www.tomorrownow.tech';
-const BACKEND_API_TOKEN = crypto.randomBytes(32).toString('hex');
 
 app.setName('Tomorrow Now PDF Editor');
 
-let pyProc = null;
+let backend = null;
+let quitting = false;
 let mainWindow = null;
 let updaterConfigured = false;
 let updateCheckActive = false;
@@ -28,15 +27,19 @@ if (!hasSingleInstanceLock) {
 
 function startBackend() {
   const logPath = path.join(app.getPath('logs'), 'backend.log');
+  if (fs.existsSync(logPath) && fs.statSync(logPath).size > 2 * 1024 * 1024) {
+    fs.renameSync(logPath, `${logPath}.previous`);
+  }
   const backendLog = fs.createWriteStream(logPath, { flags: 'a' });
+  let logBytes = fs.existsSync(logPath) ? fs.statSync(logPath).size : 0;
   backendLog.write(`\n--- Avvio backend ${new Date().toISOString()} ---\n`);
 
   const backendExecutable = app.isPackaged
     ? path.join(process.resourcesPath, 'backend', 'mac-pdf-backend')
-    : '/usr/bin/arch';
+    : path.join(__dirname, '.build-venv', 'bin', 'python');
   const backendArguments = app.isPackaged
     ? []
-    : ['-arm64', '/usr/bin/python3', path.join(__dirname, 'backend', 'main.py')];
+    : [path.join(__dirname, 'backend', 'main.py')];
   const backendDirectory = app.isPackaged
     ? path.dirname(backendExecutable)
     : __dirname;
@@ -44,38 +47,20 @@ function startBackend() {
     ? path.join(process.resourcesPath, 'fonts')
     : path.join(__dirname, 'assets', 'fonts');
 
-  pyProc = spawn(backendExecutable, backendArguments, {
-    cwd: backendDirectory,
-    env: {
-      ...process.env,
-      PYTHONUNBUFFERED: '1',
-      MAC_PDF_EDITOR_FONTS_DIR: fontsDirectory,
-      MAC_PDF_EDITOR_API_TOKEN: BACKEND_API_TOKEN,
-    },
-  });
-
-  pyProc.stdout.on('data', (data) => {
-    backendLog.write(data);
-    console.log(`[backend] ${data}`);
-  });
-  pyProc.stderr.on('data', (data) => {
-    backendLog.write(data);
-    console.error(`[backend] ${data}`);
-  });
-  pyProc.on('error', (error) => {
-    backendLog.write(`Impossibile avviare il backend: ${error.stack || error}\n`);
-    console.error('Impossibile avviare il backend:', error);
-  });
-  pyProc.on('exit', (code, signal) => {
-    backendLog.write(`Backend terminato (code=${code}, signal=${signal})\n`);
-    backendLog.end();
-    console.log(`Backend terminato (code=${code}, signal=${signal})`);
-    pyProc = null;
-  });
+  const tempRoot = path.join(app.getPath('userData'), 'pdf-sessions');
+  fs.mkdirSync(tempRoot, { recursive: true, mode: 0o700 });
+  BackendSession.cleanAbandoned(tempRoot);
+  backend = new BackendSession({ executable: backendExecutable, args: backendArguments,
+    cwd: backendDirectory, fonts: fontsDirectory, tempRoot, log: (data) => {
+      if (logBytes >= 2 * 1024 * 1024) return;
+      const chunk = data.subarray(0, 2 * 1024 * 1024 - logBytes);
+      logBytes += chunk.length; backendLog.write(chunk);
+    } });
+  backend.closed.then(() => backendLog.end());
 }
 
 function stopBackend() {
-  if (pyProc) pyProc.kill();
+  return backend?.stop() || Promise.resolve();
 }
 
 function normaliseReleaseNotes(releaseNotes) {
@@ -280,11 +265,13 @@ function createWindow() {
   });
 
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  mainWindow.webContents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
+  mainWindow.webContents.session.setPermissionCheckHandler(() => false);
   mainWindow.webContents.on('will-navigate', (event, navigationUrl) => {
     const expectedUrl = new URL(`file://${path.join(__dirname, 'index.html')}`).href;
     if (navigationUrl !== expectedUrl) event.preventDefault();
   });
-  mainWindow.loadFile('index.html');
+  mainWindow.loadFile(path.join(__dirname, 'index.html'));
   mainWindow.webContents.once('did-finish-load', () => {
     sendUpdateState();
     setTimeout(() => {
@@ -310,14 +297,26 @@ app.on('second-instance', () => {
 });
 
 function assertTrustedSender(event) {
-  if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) {
+  if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame) {
     throw new Error('Richiesta IPC non autorizzata');
   }
 }
 
-ipcMain.handle('backend-api-token', (event) => {
+ipcMain.handle('backend-request', (event, endpoint, body) => {
   assertTrustedSender(event);
-  return BACKEND_API_TOKEN;
+  return backend.request(endpoint, body);
+});
+
+// Only the isolated preload can resolve a native File to a path.
+ipcMain.handle('register-local-file', (event, filePath) => {
+  assertTrustedSender(event);
+  return backend.files.register(filePath);
+});
+
+ipcMain.handle('prune-session', async (event, keepPaths) => {
+  assertTrustedSender(event);
+  await backend.queue;
+  backend.prune(keepPaths);
 });
 
 ipcMain.handle('open-external-url', async (event, externalUrl) => {
@@ -331,24 +330,12 @@ ipcMain.handle('open-external-url', async (event, externalUrl) => {
 
 ipcMain.handle('read-local-file', async (event, filePath) => {
   assertTrustedSender(event);
-  if (typeof filePath !== 'string' || !filePath) throw new Error('Percorso file non valido');
-  if (path.extname(filePath).toLowerCase() !== '.pdf') throw new Error('È consentita soltanto la lettura di file PDF');
-  const stats = await fs.promises.stat(filePath);
-  if (!stats.isFile()) throw new Error('Il percorso selezionato non è un file');
-  return fs.promises.readFile(filePath);
+  return backend.files.read(filePath);
 });
 
 ipcMain.handle('copy-local-file', async (event, sourcePath, destinationPath) => {
   assertTrustedSender(event);
-  if (typeof sourcePath !== 'string' || typeof destinationPath !== 'string') {
-    throw new Error('Percorso file non valido');
-  }
-  if (path.extname(sourcePath).toLowerCase() !== '.pdf' || path.extname(destinationPath).toLowerCase() !== '.pdf') {
-    throw new Error('È consentita soltanto la copia di file PDF');
-  }
-  const sourceStats = await fs.promises.stat(sourcePath);
-  if (!sourceStats.isFile()) throw new Error('Il file sorgente non esiste');
-  await fs.promises.copyFile(sourcePath, destinationPath);
+  backend.files.save(sourcePath, destinationPath);
   return true;
 });
 
@@ -356,11 +343,11 @@ ipcMain.handle('save-pdf-as', async (event, defaultName) => {
   assertTrustedSender(event);
   const result = await dialog.showSaveDialog({
     title: 'Salva una nuova versione del PDF',
-    defaultPath: defaultName,
+    defaultPath: typeof defaultName === 'string' ? path.basename(defaultName) : 'documento.pdf',
     filters: [{ name: 'Documento PDF', extensions: ['pdf'] }],
     properties: ['createDirectory', 'showOverwriteConfirmation'],
   });
-  return result.canceled ? null : result.filePath;
+  return backend.files.allowSave(result.canceled ? null : result.filePath);
 });
 
 ipcMain.handle('get-update-status', (event) => {
@@ -389,13 +376,15 @@ ipcMain.handle('download-update', async (event) => {
 ipcMain.handle('install-update', (event) => {
   assertTrustedSender(event);
   if (!app.isPackaged || updateState.phase !== 'downloaded') return false;
-  stopBackend();
-  setImmediate(() => autoUpdater.quitAndInstall(false, true));
+  stopBackend().then(() => autoUpdater.quitAndInstall(false, true));
   return true;
 });
 
 app.on('window-all-closed', () => app.quit());
 
-app.on('will-quit', () => {
-  stopBackend();
+app.on('before-quit', (event) => {
+  if (quitting) return;
+  event.preventDefault();
+  quitting = true;
+  stopBackend().finally(() => app.quit());
 });

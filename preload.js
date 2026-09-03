@@ -2,10 +2,15 @@ const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('desktopAPI', Object.freeze({
   getPathForFile(file) {
-    return webUtils?.getPathForFile?.(file) || file?.path || '';
+    const filePath = webUtils.getPathForFile(file);
+    if (!filePath) throw new Error('Seleziona un file PDF dal computer');
+    return ipcRenderer.invoke('register-local-file', filePath);
   },
-  getBackendToken() {
-    return ipcRenderer.invoke('backend-api-token');
+  request(endpoint, body) {
+    return ipcRenderer.invoke('backend-request', endpoint, body);
+  },
+  pruneSession(keepPaths) {
+    return ipcRenderer.invoke('prune-session', keepPaths);
   },
   openExternal(externalUrl) {
     return ipcRenderer.invoke('open-external-url', externalUrl);

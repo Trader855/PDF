@@ -13,9 +13,9 @@ by each upstream project.
 | Starlette | transitive dependency | BSD-3-Clause | <https://www.starlette.io/> |
 | Pydantic | 2.13.4 | MIT | <https://docs.pydantic.dev/> |
 | Uvicorn | 0.39.0 | BSD-3-Clause | <https://www.uvicorn.org/> |
-| Electron | 28.x | MIT | <https://www.electronjs.org/> |
+| Electron | 44.1.1 | MIT | <https://www.electronjs.org/> |
 | electron-updater | 6.8.x | MIT | <https://www.electron.build/auto-update.html> |
-| PDF.js / pdfjs-dist | 3.11.x | Apache-2.0 | <https://mozilla.github.io/pdf.js/> |
+| PDF.js / pdfjs-dist | 6.3.289 | Apache-2.0 | <https://mozilla.github.io/pdf.js/> |
 
 ## Build tooling
 

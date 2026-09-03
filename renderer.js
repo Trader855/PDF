@@ -1,10 +1,12 @@
-const API_BASE = "http://127.0.0.1:8000";
+import * as pdfjsLib from './node_modules/pdfjs-dist/build/pdf.mjs';
 const MAX_PDF_SCALE = 1.5;
 const THUMBNAIL_WIDTH = 145;
 const TOMORROW_NOW_URL = "https://www.tomorrownow.tech";
 const appBridge = window.desktopAPI || null;
-const pdfjsLib = window.pdfjsLib || null;
-let backendApiToken = "";
+let pendingPasswordInsert = null;
+let thumbnailObserver = null;
+const thumbnailTasks = new Set();
+let pdfLoadingTask = null;
 
 const filePaths = Object.freeze({
   normalize(value) {
@@ -47,7 +49,7 @@ const filePaths = Object.freeze({
 });
 
 if (pdfjsLib) {
-  pdfjsLib.GlobalWorkerOptions.workerSrc = "node_modules/pdfjs-dist/build/pdf.worker.js";
+  pdfjsLib.GlobalWorkerOptions.workerSrc = "node_modules/pdfjs-dist/build/pdf.worker.mjs";
 }
 
 const ui = {
@@ -487,55 +489,17 @@ async function ensureBackend() {
   if (!appBridge) {
     throw new Error("il backend locale è disponibile soltanto nell’app Mac installata");
   }
-  if (!backendApiToken) backendApiToken = await appBridge.getBackendToken();
-
-  for (let attempt = 0; attempt < 60; attempt += 1) {
-    try {
-      const response = await fetch(`${API_BASE}/health`, {
-        headers: { Authorization: `Bearer ${backendApiToken}` },
-      });
-      if (response.ok) {
-        state.backendReady = true;
-        return;
-      }
-    } catch {
-      // Il processo Python può impiegare qualche istante ad avviarsi.
-    }
-    await delay(250);
-  }
-
-  throw new Error("backend Python non raggiungibile. Avvia l'app con “npm start”, non aprendo index.html nel browser");
+  await appBridge.request('/health');
+  state.backendReady = true;
 }
 
 async function apiRequest(endpoint, options = {}) {
   await ensureBackend();
-  let response;
-
   try {
-    response = await fetch(`${API_BASE}${endpoint}`, {
-      ...options,
-      headers: {
-        ...(options.headers || {}),
-        Authorization: `Bearer ${backendApiToken}`,
-      },
-    });
+    return await appBridge.request(endpoint, options.body ? JSON.parse(options.body) : null);
   } catch (error) {
-    state.backendReady = false;
-    throw new Error(`connessione al backend interrotta: ${error.message}`);
+    throw new Error(error.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, ''));
   }
-
-  if (!response.ok) {
-    let reason = "";
-    try {
-      const errorBody = await response.json();
-      reason = errorBody.detail || errorBody.message || "";
-    } catch {
-      reason = await response.text();
-    }
-    throw new Error(`${reason || `backend ${response.status}`}`);
-  }
-
-  return response.json();
 }
 
 async function loadFontCatalog() {
@@ -609,7 +573,7 @@ async function previewSelectedFont() {
       previewFamily = `MacPdf-${catalogFont.id}`;
       const fontFace = new FontFace(
         previewFamily,
-        `url(${API_BASE}/font-file/${encodeURIComponent(catalogFont.id)})`,
+        new Uint8Array(await appBridge.request(`/font-file/${catalogFont.id}`)),
       );
       await fontFace.load();
       document.fonts.add(fontFace);
@@ -812,8 +776,10 @@ async function renderPage(pageNumber) {
   setStatus(`Rendering pagina ${pageNumber}…`);
 
   if (state.renderTask) {
-    state.renderTask.cancel();
+    const previous = state.renderTask;
+    previous.cancel();
     state.renderTask = null;
+    await previous.promise.catch(() => {});
   }
 
   const page = await state.pdf.getPage(pageNumber);
@@ -821,12 +787,15 @@ async function renderPage(pageNumber) {
 
   const baseViewport = page.getViewport({ scale: 1 });
   const availableWidth = Math.max(320, ui.workspace.clientWidth - 72);
-  state.pageScale = Math.min(MAX_PDF_SCALE, availableWidth / baseViewport.width);
+  const deviceScale = Math.min(2, Math.max(1, window.devicePixelRatio || 1));
+  state.pageScale = Math.min(MAX_PDF_SCALE, availableWidth / baseViewport.width,
+    Math.sqrt(12_000_000 / (baseViewport.width * baseViewport.height)) / deviceScale,
+    16000 / Math.max(baseViewport.width, baseViewport.height) / deviceScale);
   const viewport = page.getViewport({ scale: state.pageScale });
   state.currentViewport = viewport;
   state.pdfPageHeight = Math.abs(Number(page.view?.[3]) - Number(page.view?.[1])) || baseViewport.height;
   ui.zoomIndicator.textContent = `${Math.round(state.pageScale * 100)}%`;
-  const outputScale = Math.max(1, window.devicePixelRatio || 1);
+  const outputScale = deviceScale;
   const context = ui.canvas.getContext("2d", { alpha: false });
 
   ui.canvas.width = Math.ceil(viewport.width * outputScale);
@@ -916,6 +885,47 @@ async function renderPage(pageNumber) {
 
 async function renderThumbnails() {
   const thumbnailVersion = ++state.thumbnailVersion;
+  thumbnailObserver?.disconnect();
+  for (const task of thumbnailTasks) task.cancel();
+  thumbnailTasks.clear();
+  const pdf = state.pdf;
+  let renderQueue = Promise.resolve();
+  const visible = new Set();
+  const cached = new Map();
+  thumbnailObserver = new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      const button = entry.target;
+      if (!entry.isIntersecting) { visible.delete(button); continue; }
+      visible.add(button);
+      if (button.dataset.ready || button.dataset.queued) continue;
+      button.dataset.queued = '1';
+      renderQueue = renderQueue.then(async () => {
+        if (thumbnailVersion !== state.thumbnailVersion || !visible.has(button)) return;
+        const canvas = button.querySelector('canvas');
+        const page = await pdf.getPage(Number(button.dataset.pageNumber));
+        const base = page.getViewport({ scale: 1 });
+        const viewport = page.getViewport({ scale: Math.min(THUMBNAIL_WIDTH / base.width, 220 / base.height) });
+        canvas.width = Math.ceil(viewport.width * 2);
+        canvas.height = Math.ceil(viewport.height * 2);
+        canvas.style.width = `${viewport.width}px`;
+        canvas.style.height = `${viewport.height}px`;
+        const task = page.render({ canvasContext: canvas.getContext('2d', { alpha: false }), viewport, transform: [2, 0, 0, 2, 0, 0] });
+        thumbnailTasks.add(task);
+        try { await task.promise; } finally { thumbnailTasks.delete(task); }
+        button.dataset.ready = '1';
+        cached.set(button, canvas);
+        for (const [oldButton, oldCanvas] of cached) {
+          if (cached.size <= 20) break;
+          if (visible.has(oldButton)) continue;
+          oldCanvas.width = 1; oldCanvas.height = 1;
+          delete oldButton.dataset.ready;
+          cached.delete(oldButton);
+        }
+      }).catch((error) => {
+        if (error.name !== 'RenderingCancelledException' && thumbnailVersion === state.thumbnailVersion) console.warn('Miniatura non disponibile');
+      }).finally(() => { delete button.dataset.queued; });
+    }
+  }, { root: ui.thumbnails, rootMargin: '300px' });
   ui.thumbnails.replaceChildren();
   ui.thumbnailsTitle.classList.remove("hidden");
 
@@ -946,6 +956,9 @@ async function renderThumbnails() {
     button.setAttribute("aria-label", `Vai a pagina ${pageNumber}`);
 
     const canvas = document.createElement("canvas");
+    canvas.width = 1; canvas.height = 1;
+    canvas.style.width = `${THUMBNAIL_WIDTH}px`;
+    canvas.style.height = '200px';
     const label = document.createElement("span");
     label.className = "thumbnail-number";
     label.textContent = String(pageNumber);
@@ -984,35 +997,25 @@ async function renderThumbnails() {
     appendInsertControl(pageNumber);
     updateNavigation();
 
-    try {
-      const page = await state.pdf.getPage(pageNumber);
-      const baseViewport = page.getViewport({ scale: 1 });
-      const viewport = page.getViewport({ scale: THUMBNAIL_WIDTH / baseViewport.width });
-      const outputScale = Math.min(2, Math.max(1, window.devicePixelRatio || 1));
-      canvas.width = Math.ceil(viewport.width * outputScale);
-      canvas.height = Math.ceil(viewport.height * outputScale);
-      canvas.style.width = `${viewport.width}px`;
-      canvas.style.height = `${viewport.height}px`;
-      await page.render({
-        canvasContext: canvas.getContext("2d", { alpha: false }),
-        viewport,
-        transform: outputScale === 1 ? null : [outputScale, 0, 0, outputScale, 0, 0],
-      }).promise;
-    } catch (error) {
-      if (thumbnailVersion === state.thumbnailVersion) {
-        console.warn(`Miniatura pagina ${pageNumber} non disponibile:`, error);
-      }
-    }
+    thumbnailObserver.observe(button);
   }
 }
 
 async function loadPdfData(pdfData) {
   state.renderVersion += 1;
   state.thumbnailVersion += 1;
+  thumbnailObserver?.disconnect();
+  for (const task of thumbnailTasks) task.cancel();
   if (state.renderTask) state.renderTask.cancel();
-  if (state.pdf) await state.pdf.destroy();
+  if (pdfLoadingTask) await pdfLoadingTask.destroy();
+  pdfLoadingTask = null;
+  state.pdf = null;
 
-  const loadingTask = pdfjsLib.getDocument({ data: pdfData });
+  const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(pdfData), isEvalSupported: false,
+    maxImageSize: 12_000_000, canvasMaxAreaInBytes: 48_000_000,
+    cMapUrl: 'node_modules/pdfjs-dist/cmaps/', cMapPacked: true,
+    standardFontDataUrl: 'node_modules/pdfjs-dist/standard_fonts/', wasmUrl: 'node_modules/pdfjs-dist/wasm/' });
+  pdfLoadingTask = loadingTask;
   state.pdf = await loadingTask.promise;
 }
 
@@ -1033,8 +1036,12 @@ async function openPdf(filePath, file = null) {
   }
 
   if (pdfInfo.needs_password) {
-    if (state.pdf) await state.pdf.destroy();
+    if (pdfLoadingTask) await pdfLoadingTask.destroy();
+    pdfLoadingTask = null;
     state.pdf = null;
+    state.undoStack = [];
+    state.redoStack = [];
+    updateHistoryButtons();
     state.originalPath = filePath;
     state.workingPath = "";
     state.originalName = file?.name || filePaths.basename(filePath);
@@ -1173,8 +1180,10 @@ async function insertPdfAt(filePath, insertAt, password = null) {
     });
   } catch (error) {
     if (!password && /richiede una password/i.test(error.message)) {
-      const provided = window.prompt("Il PDF da inserire è protetto. Inserisci la password:");
-      if (provided !== null) return insertPdfAt(filePath, insertAt, provided);
+      pendingPasswordInsert = { filePath, insertAt };
+      showUnlockDialog(true);
+      ui.unlockMessage.textContent = 'Il PDF da inserire è protetto. Inserisci la sua password.';
+      return;
     }
     throw error;
   }
@@ -1186,7 +1195,9 @@ async function insertPdfAt(filePath, insertAt, password = null) {
 }
 
 function openPdfSafely(filePath, file = null) {
-  openPdf(filePath, file).catch((error) => {
+  openPdf(filePath, file).then(() => {
+    if (filePath) return appBridge.pruneSession([filePath]);
+  }).catch((error) => {
     console.error(error);
     setStatus(`Errore: ${error.message}`, true);
   });
@@ -1342,7 +1353,7 @@ async function findCoherentEdits() {
       body: JSON.stringify({
         file_path: activePdfPath(),
         text: originalText,
-        include_ocr: true,
+        include_ocr: false,
       }),
     });
     const matches = Array.isArray(result.matches) ? result.matches : [];
@@ -1417,7 +1428,7 @@ async function applyCoherentEdit() {
         body: JSON.stringify({
           file_path: activePdfPath(),
           text: originalText,
-          include_ocr: true,
+          include_ocr: false,
         }),
       });
       const remaining = Array.isArray(verification.matches) ? verification.matches.length : 0;
@@ -2165,7 +2176,8 @@ function stampDataUrl(text, color = "#d83d37") {
 
 function savedSignatureMarks() {
   try {
-    return JSON.parse(localStorage.getItem("macPdfEditor.savedMarks") || "[]");
+    const marks = JSON.parse(localStorage.getItem("macPdfEditor.savedMarks") || "[]");
+    return Array.isArray(marks) ? marks.filter((mark) => typeof mark.label === 'string' && /^data:image\/png;base64,/.test(mark.imageData)).slice(0, 8) : [];
   } catch {
     return [];
   }
@@ -2175,7 +2187,11 @@ function storeSignatureMark(imageData, label) {
   const marks = savedSignatureMarks();
   if (!marks.some((mark) => mark.imageData === imageData)) {
     marks.unshift({ id: Date.now(), label, imageData });
-    localStorage.setItem("macPdfEditor.savedMarks", JSON.stringify(marks.slice(0, 8)));
+    try {
+      localStorage.setItem("macPdfEditor.savedMarks", JSON.stringify(marks.slice(0, 8)));
+    } catch {
+      setStatus('Firma inseribile, ma memoria delle firme piena. Elimina quelle salvate per conservarne altre.', true);
+    }
   }
 }
 
@@ -2187,6 +2203,14 @@ function renderSavedMarks() {
   ];
   const marks = [...savedSignatureMarks(), ...defaults];
   const fragment = document.createDocumentFragment();
+  const clear = document.createElement('button');
+  clear.type = 'button'; clear.className = 'btn'; clear.textContent = 'Elimina firme salvate';
+  clear.disabled = savedSignatureMarks().length === 0;
+  clear.addEventListener('click', () => {
+    if (!window.confirm('Eliminare tutte le firme e i timbri salvati su questo Mac?')) return;
+    localStorage.removeItem('macPdfEditor.savedMarks'); renderSavedMarks();
+  });
+  fragment.appendChild(clear);
   for (const mark of marks) {
     const button = document.createElement("button");
     button.type = "button";
@@ -2233,12 +2257,11 @@ async function savePdfAs() {
   setStatus(`Nuova versione salvata: ${destination}`);
 }
 
-function getLocalFilePath(file) {
+async function getLocalFilePath(file) {
   if (!file) return "";
-  if (typeof file.path === "string" && file.path) return file.path;
   if (!appBridge) return "";
   try {
-    return appBridge.getPathForFile(file) || "";
+    return await appBridge.getPathForFile(file) || "";
   } catch (error) {
     console.warn("Percorso locale non disponibile:", error.message);
     return "";
@@ -2251,7 +2274,12 @@ ui.unlockButton.addEventListener("click", () => showUnlockDialog(Boolean(state.l
 
 ui.unlockForm.addEventListener("submit", (event) => {
   event.preventDefault();
-  unlockCurrentPdf(ui.unlockPassword.value).then(() => {
+  const operation = pendingPasswordInsert
+    ? insertPdfAt(pendingPasswordInsert.filePath, pendingPasswordInsert.insertAt, ui.unlockPassword.value)
+    : unlockCurrentPdf(ui.unlockPassword.value);
+  operation.then(() => {
+    pendingPasswordInsert = null;
+    ui.unlockPassword.value = '';
     ui.unlockDialog.close();
   }).catch((error) => {
     console.error(error);
@@ -2259,6 +2287,7 @@ ui.unlockForm.addEventListener("submit", (event) => {
     ui.unlockPassword.select();
   });
 });
+ui.unlockDialog.addEventListener('close', () => { pendingPasswordInsert = null; ui.unlockPassword.value = ''; });
 
 document.querySelectorAll("[data-close-dialog]").forEach((button) => {
   button.addEventListener("click", () => document.querySelector(`#${button.dataset.closeDialog}`)?.close());
@@ -2266,7 +2295,7 @@ document.querySelectorAll("[data-close-dialog]").forEach((button) => {
 
 ui.fileInput.addEventListener("change", () => {
   const file = ui.fileInput.files?.[0];
-  if (file) openPdfSafely(getLocalFilePath(file), file);
+  if (file) getLocalFilePath(file).then((filePath) => openPdfSafely(filePath, file));
   ui.fileInput.value = "";
 });
 
@@ -2288,7 +2317,7 @@ ui.insertPdfInput.addEventListener("change", () => {
   state.pendingInsertAt = null;
   ui.insertPdfInput.value = "";
   if (!file) return;
-  insertPdfAt(getLocalFilePath(file), insertAt).catch((error) => {
+  getLocalFilePath(file).then((filePath) => insertPdfAt(filePath, insertAt)).catch((error) => {
     console.error(error);
     setStatus(`Inserimento non riuscito: ${error.message}`, true);
   });
@@ -2888,7 +2917,7 @@ window.addEventListener("drop", (event) => {
     setStatus("Trascina un file PDF valido.", true);
     return;
   }
-  openPdfSafely(getLocalFilePath(file), file);
+  getLocalFilePath(file).then((filePath) => openPdfSafely(filePath, file));
 }, true);
 
 let pageResizeTimer = null;

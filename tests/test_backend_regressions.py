@@ -175,6 +175,30 @@ class FontCoverageTests(BackendRegressionCase):
 
 
 class TextEditingTests(BackendRegressionCase):
+    def test_switch_to_bundled_font_survives_redaction_and_keeps_accents(self):
+        span = self.date_span(self.source)
+        output = self.output('changed-font.pdf')
+        main.edit_text(main.EditTextRequest(
+            file_path=str(self.source), output_path=str(output),
+            bbox=span['bbox'], origin=span['origin'], new_text='06/09/2026 àèéìòù €',
+            font='Liberation Sans', font_resource=None, size=10,
+        ))
+        self.assertIn('06/09/2026 àèéìòù €', page_text(output))
+        self.assertNotIn('05/08/2026', page_text(output))
+
+    def test_batch_font_change_survives_redaction(self):
+        found = main.find_repeated_text(main.FindRepeatedTextRequest(
+            file_path=str(self.source), text='05/08/2026', include_ocr=False,
+        ))
+        changes = [main.BatchTextChange(**dict(match, font='Liberation Sans', font_resource=None)) for match in found['matches']]
+        output = self.output('batch-font.pdf')
+        main.batch_edit_text(main.BatchEditTextRequest(
+            file_path=str(self.source), output_path=str(output), old_text='05/08/2026',
+            new_text='06/09/2026 àèéìòù €', changes=changes,
+        ))
+        for page_num in range(2):
+            self.assertIn('06/09/2026 àèéìòù €', page_text(output, page_num))
+
     def date_span(self, path: Path) -> dict:
         result = main.inspect_text(main.InspectRequest(file_path=str(path), page_num=0))
         return next(span for span in result["spans"] if span["text"] == "05/08/2026")

@@ -15,7 +15,7 @@
     "backend": "python3 backend/main.py",
     "test": "pnpm run test:backend && pnpm run test:js",
     "test:backend": ".build-venv/bin/python -m unittest discover -s tests -v",
-    "test:js": "ELECTRON_RUN_AS_NODE=1 electron --check main.js && ELECTRON_RUN_AS_NODE=1 electron --check preload.js && ELECTRON_RUN_AS_NODE=1 electron --check renderer.js",
+    "test:js": "node --check main.js && node --check preload.js && node --check renderer.js && node --test tests/security.test.cjs",
     "test:real-pdf": ".build-venv/bin/python -m unittest discover -s tests -v",
     "test:packaged": ".build-venv/bin/python scripts/qa_packaged_backend.py",
     "qa:release": "pnpm run test && pnpm run build:all && pnpm run dist:mac && pnpm run finalize:dmg && pnpm run test:packaged",
@@ -27,12 +27,12 @@
   },
   "devDependencies": {
     "@electron/notarize": "2.5.0",
-    "electron": "^28.2.0",
+    "electron": "^44.1.1",
     "electron-builder": "^26.15.3"
   },
   "dependencies": {
     "electron-updater": "^6.8.9",
-    "pdfjs-dist": "^3.11.174"
+    "pdfjs-dist": "^6.3.289"
   },
   "build": {
     "appId": "it.lettera.macpdfeditor",
@@ -55,14 +55,17 @@
     },
     "files": [
       "main.js",
+      "desktop-security.js",
       "preload.js",
       "renderer.js",
       "index.html",
       "package.json",
       "LICENSE",
       "THIRD_PARTY_NOTICES.md",
-      "node_modules/pdfjs-dist/build/pdf.js",
-      "node_modules/pdfjs-dist/build/pdf.worker.js"
+      "node_modules/pdfjs-dist/build/*.mjs",
+      "node_modules/pdfjs-dist/cmaps/**/*",
+      "node_modules/pdfjs-dist/standard_fonts/**/*",
+      "node_modules/pdfjs-dist/wasm/**/*"
     ],
     "extraResources": [
       {
