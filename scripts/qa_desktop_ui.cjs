@@ -36,6 +36,7 @@ const root = path.resolve(__dirname, '..');
     await page.locator('.text-box').first().click();
     await page.locator('#selected-text').fill('DATA 06/09/2026 àèéìòù €');
     await page.locator('#selected-font').fill('Liberation Sans');
+    await page.getByRole('option', { name: 'Liberation Sans', exact: true }).click();
     await page.locator('#apply-edit').click();
     console.log('QA: edit submitted');
     await page.waitForFunction(() => document.querySelector('#status').textContent.includes('Ora puoi salvare'));
