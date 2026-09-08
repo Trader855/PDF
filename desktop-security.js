@@ -23,6 +23,17 @@ function checkedPdf(filePath) {
   return fs.realpathSync(filePath);
 }
 
+function isDirectChild(parentDirectory, filePath) {
+  const relative = path.relative(parentDirectory, filePath);
+  return Boolean(
+    relative
+    && !relative.startsWith(`..${path.sep}`)
+    && relative !== '..'
+    && !path.isAbsolute(relative)
+    && path.dirname(relative) === '.',
+  );
+}
+
 class FileAccess {
   constructor(sessionDirectory) {
     this.sessionDirectory = fs.realpathSync(sessionDirectory);
@@ -44,7 +55,9 @@ class FileAccess {
   }
   registerOutput(filePath) {
     const canonical = checkedPdf(filePath);
-    if (path.dirname(canonical) !== this.sessionDirectory) throw new Error('Risposta del backend non valida');
+    // path.relative follows Windows' case-insensitive path semantics, while a
+    // string comparison can reject the same directory with different casing.
+    if (!isDirectChild(this.sessionDirectory, canonical)) throw new Error('Risposta del backend non valida');
     return this.register(canonical);
   }
   read(filePath) {
@@ -206,4 +219,4 @@ class BackendSession {
   }
 }
 
-module.exports = { BackendSession, FileAccess, MAX_PDF_BYTES };
+module.exports = { BackendSession, FileAccess, MAX_PDF_BYTES, isDirectChild };

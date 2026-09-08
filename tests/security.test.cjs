@@ -5,7 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 const net = require('node:net');
 const { execFileSync } = require('node:child_process');
-const { FileAccess, BackendSession, MAX_PDF_BYTES } = require('../desktop-security');
+const { FileAccess, BackendSession, MAX_PDF_BYTES, isDirectChild } = require('../desktop-security');
 const { virtualEnvironmentPython } = require('../platform-runtime');
 const root = path.resolve(__dirname, '..');
 const python = virtualEnvironmentPython(root);
@@ -34,6 +34,13 @@ test('File capabilities: unauthorized paths, symlinks, replacement, size and one
     fs.renameSync(source, path.join(temp, 'original.pdf')); fs.writeFileSync(source, 'replacement');
     assert.throws(() => access.read(source), /sostituito/);
   } finally { fs.rmSync(temp, { recursive: true, force: true }); }
+});
+
+test('Backend outputs must be direct children of the private session', () => {
+  const session = path.join(os.tmpdir(), 'pdf-session-child-check');
+  assert.equal(isDirectChild(session, path.join(session, 'result.pdf')), true);
+  assert.equal(isDirectChild(session, path.join(session, 'nested', 'result.pdf')), false);
+  assert.equal(isDirectChild(session, path.join(session, '..', 'outside.pdf')), false);
 });
 
 test('Actual backend: private pipe, ephemeral port, auth, fonts, passwords, round trip and cleanup', { timeout: 80000 }, async () => {
