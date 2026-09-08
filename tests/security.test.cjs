@@ -37,10 +37,17 @@ test('File capabilities: unauthorized paths, symlinks, replacement, size and one
 });
 
 test('Backend outputs must be direct children of the private session', () => {
-  const session = path.join(os.tmpdir(), 'pdf-session-child-check');
-  assert.equal(isDirectChild(session, path.join(session, 'result.pdf')), true);
-  assert.equal(isDirectChild(session, path.join(session, 'nested', 'result.pdf')), false);
-  assert.equal(isDirectChild(session, path.join(session, '..', 'outside.pdf')), false);
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'pdf-session-child-check-'));
+  const session = path.join(temp, 'session');
+  const nested = path.join(session, 'nested');
+  fs.mkdirSync(nested, { recursive: true });
+  try {
+    assert.equal(isDirectChild(session, path.join(session, 'result.pdf')), true);
+    assert.equal(isDirectChild(session, path.join(nested, 'result.pdf')), false);
+    assert.equal(isDirectChild(session, path.join(temp, 'outside.pdf')), false);
+  } finally {
+    fs.rmSync(temp, { recursive: true, force: true });
+  }
 });
 
 test('Actual backend: private pipe, ephemeral port, auth, fonts, passwords, round trip and cleanup', { timeout: 80000 }, async () => {

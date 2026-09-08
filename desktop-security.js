@@ -24,14 +24,16 @@ function checkedPdf(filePath) {
 }
 
 function isDirectChild(parentDirectory, filePath) {
-  const relative = path.relative(parentDirectory, filePath);
-  return Boolean(
-    relative
-    && !relative.startsWith(`..${path.sep}`)
-    && relative !== '..'
-    && !path.isAbsolute(relative)
-    && path.dirname(relative) === '.',
-  );
+  try {
+    const expectedParent = fs.statSync(parentDirectory);
+    const actualParent = fs.statSync(path.dirname(filePath));
+    return expectedParent.isDirectory()
+      && actualParent.isDirectory()
+      && expectedParent.dev === actualParent.dev
+      && expectedParent.ino === actualParent.ino;
+  } catch {
+    return false;
+  }
 }
 
 class FileAccess {
@@ -55,8 +57,8 @@ class FileAccess {
   }
   registerOutput(filePath) {
     const canonical = checkedPdf(filePath);
-    // path.relative follows Windows' case-insensitive path semantics, while a
-    // string comparison can reject the same directory with different casing.
+    // Directory identity works with Windows case variants and legacy 8.3
+    // aliases while still rejecting nested directories and junction escapes.
     if (!isDirectChild(this.sessionDirectory, canonical)) throw new Error('Risposta del backend non valida');
     return this.register(canonical);
   }
