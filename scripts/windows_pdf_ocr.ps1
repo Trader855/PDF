@@ -111,10 +111,10 @@ try {
             confidence = 1.0
             # Match Apple Vision: normalized origin is bottom-left.
             bbox = @(
-                $left / $pixelWidth,
-                1.0 - ($bottom / $pixelHeight),
-                ($right - $left) / $pixelWidth,
-                ($bottom - $top) / $pixelHeight
+                [double]($left / $pixelWidth)
+                [double](1.0 - ($bottom / $pixelHeight))
+                [double](($right - $left) / $pixelWidth)
+                [double](($bottom - $top) / $pixelHeight)
             )
         }
     }
