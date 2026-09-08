@@ -36,7 +36,7 @@ try {
     Add-Type -AssemblyName System.Runtime.WindowsRuntime
     $null = [Windows.Storage.StorageFile, Windows.Storage, ContentType = WindowsRuntime]
     $null = [Windows.Storage.FileAccessMode, Windows.Storage, ContentType = WindowsRuntime]
-    $null = [Windows.Storage.Streams.IRandomAccessStreamWithContentType, Windows.Storage.Streams, ContentType = WindowsRuntime]
+    $null = [Windows.Storage.Streams.IRandomAccessStream, Windows.Storage.Streams, ContentType = WindowsRuntime]
     $null = [Windows.Graphics.Imaging.BitmapDecoder, Windows.Graphics.Imaging, ContentType = WindowsRuntime]
     $null = [Windows.Graphics.Imaging.SoftwareBitmap, Windows.Graphics.Imaging, ContentType = WindowsRuntime]
     $null = [Windows.Globalization.Language, Windows.Globalization, ContentType = WindowsRuntime]
@@ -53,7 +53,7 @@ try {
         ([Windows.Storage.StorageFile])
     $stream = Await-WinRtOperation `
         ($file.OpenAsync([Windows.Storage.FileAccessMode]::Read)) `
-        ([Windows.Storage.Streams.IRandomAccessStreamWithContentType])
+        ([Windows.Storage.Streams.IRandomAccessStream])
     $decoder = Await-WinRtOperation `
         ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($stream)) `
         ([Windows.Graphics.Imaging.BitmapDecoder])
