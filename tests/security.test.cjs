@@ -81,7 +81,7 @@ test('Actual backend: private pipe, ephemeral port, auth, fonts, passwords, roun
     assert.equal((await fetch(session.base + '/add-text', { method: 'POST', headers: { Authorization: `Bearer ${session.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ file_path: source, output_path: source }) })).status, 403);
     await assert.rejects(session.request('/unlock-pdf', { file_path: locked, password: 'wrong' }), /Password/);
     const unlocked = await session.request('/unlock-pdf', { file_path: locked, password: 'secret-test' });
-    assert.equal(path.dirname(unlocked.output_path), session.directory);
+    assert.equal(isDirectChild(session.directory, unlocked.output_path), true);
     assert.equal((await session.request('/pdf-info', { file_path: unlocked.output_path })).needs_password, false);
     await assert.rejects(session.request('/insert-pdf', { file_path: source, insert_file_path: locked, insert_at: 1 }), /password/);
     const merged = await session.request('/insert-pdf', { file_path: source, insert_file_path: locked, insert_at: 1, insert_password: 'secret-test' });
