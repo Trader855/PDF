@@ -26,7 +26,7 @@
     "build:all": "pnpm run build:ocr && pnpm run build:backend",
     "build:win": "pnpm run build:backend:win",
     "dist:mac": "electron-builder --mac dmg zip --arm64",
-    "dist:win": "electron-builder --config electron-builder.windows.cjs --win nsis zip --x64",
+    "dist:win": "electron-builder --config electron-builder.windows.cjs --win nsis zip --x64 --publish never",
     "qa:windows": "pnpm run test && pnpm run test:ocr:windows && pnpm run build:win && pnpm run dist:win && pnpm run test:packaged",
     "finalize:dmg": "node scripts/finalize_dmg.js"
   },
