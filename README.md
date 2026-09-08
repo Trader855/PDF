@@ -32,8 +32,8 @@ Accanto a ogni pacchetto è indicato il tag del relativo
 - compressione ottimizzata per l'invio via e-mail;
 - OCR locale in italiano e inglese per rendere ricercabili le scansioni;
 - ricerca in tutto il documento con `⌘F` su Mac o `Ctrl+F` su Windows, evidenziazione dei risultati e navigazione avanti/indietro;
-- controllo automatico discreto degli aggiornamenti GitHub, con indicatore “Aggiorna”, download su conferma e installazione al riavvio;
-- comando **Aiuto → Controlla aggiornamenti…** nella barra menu dell'app.
+- su Mac, controllo automatico discreto degli aggiornamenti GitHub, con indicatore “Aggiorna”, download su conferma e installazione al riavvio;
+- comando **Aiuto → Controlla aggiornamenti…** nella barra menu dell'app; nella beta Windows mostra correttamente che il canale automatico non è ancora attivo.
 - comando **Aiuto → Codice sorgente e licenze…** sempre collegato a questo
   repository pubblico;
 - barra Tomorrow Now sempre visibile in fondo all'app, con collegamento sicuro
@@ -73,13 +73,20 @@ termina improvvisamente, il backend rileva la chiusura della pipe e termina;
 le sessioni abbandonate riconoscibili vengono ripulite all'avvio successivo.
 Questa pulizia non promette cancellazione forense da SSD, backup o swap.
 
-Il controllo aggiornamenti contatta GitHub all'avvio. I collegamenti esterni
+Su Mac il controllo aggiornamenti contatta GitHub all'avvio. Nella beta Windows
+è disattivato per impedire che un pacchetto di prova cerchi una release Mac.
+I collegamenti esterni
 si aprono soltanto su richiesta. Firme e timbri salvati rimangono sul dispositivo
 finché l'utente non usa «Elimina firme salvate» nel relativo pannello.
 Limiti: PDF fino a 100 MB e 1000 pagine, OCR fino a 12 megapixel per pagina,
 timeout OCR di 20 secondi per pagina. Il limite complessivo di richiesta è
 120 secondi; al superamento la sessione viene arrestata. Questi limiti non
 costituiscono una garanzia contro ogni PDF malevolo.
+
+Su Windows le copie di sessione ereditano le autorizzazioni della cartella dati
+per-utente di Electron (`AppData`). Non sono condivise con gli altri utenti
+standard del computer; amministratori e account di sistema possono comunque
+accedervi. La rimozione all'uscita non è una cancellazione forense.
 
 ## Controlli prima di una release
 
@@ -121,7 +128,10 @@ pnpm run qa:windows
 ```
 
 La workflow `Windows desktop validation` ripete automaticamente suite, OCR,
-packaging e round-trip del backend su un runner Windows x64. Solo dopo anche
+interfaccia Electron, percorsi con spazi/accenti, packaging e round-trip del
+backend su un runner Windows x64. L'associazione `.pdf` rende l'app disponibile
+nel menu **Apri con**, ma Windows non la imposta automaticamente come predefinita.
+Solo dopo anche
 un collaudo manuale su Windows 10 e 11 il pacchetto potrà diventare una release.
 
 ## Installazione Mac

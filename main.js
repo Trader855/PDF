@@ -19,7 +19,7 @@ let activeCheckIsManual = false;
 let rendererReady = false;
 const pendingPdfPaths = [];
 let updateState = {
-  phase: 'idle',
+  phase: process.platform === 'win32' ? 'unavailable' : 'idle',
   currentVersion: app.getVersion(),
 };
 
@@ -28,12 +28,15 @@ if (!hasSingleInstanceLock) {
   app.quit();
 }
 
-function startBackend() {
+async function startBackend() {
+  fs.mkdirSync(app.getPath('logs'), { recursive: true });
   const logPath = path.join(app.getPath('logs'), 'backend.log');
   if (fs.existsSync(logPath) && fs.statSync(logPath).size > 2 * 1024 * 1024) {
+    fs.rmSync(`${logPath}.previous`, { force: true, maxRetries: 3, retryDelay: 100 });
     fs.renameSync(logPath, `${logPath}.previous`);
   }
   const backendLog = fs.createWriteStream(logPath, { flags: 'a' });
+  backendLog.on('error', (error) => console.error('Log backend non disponibile:', error));
   let logBytes = fs.existsSync(logPath) ? fs.statSync(logPath).size : 0;
   backendLog.write(`\n--- Avvio backend ${new Date().toISOString()} ---\n`);
 
@@ -54,6 +57,14 @@ function startBackend() {
       logBytes += chunk.length; backendLog.write(chunk);
     } });
   backend.closed.then(() => backendLog.end());
+  try {
+    await backend.ready;
+  } catch (error) {
+    backendLog.end();
+    await backend.stop().catch(() => {});
+    backend = null;
+    throw error;
+  }
 }
 
 function stopBackend() {
@@ -177,6 +188,13 @@ function configureUpdater() {
 }
 
 async function checkForAppUpdate(manual = false) {
+  if (process.platform === 'win32') {
+    return sendUpdateState({
+      phase: 'unavailable',
+      manual,
+      error: '',
+    });
+  }
   if (!app.isPackaged) {
     return sendUpdateState({
       phase: 'development',
@@ -298,9 +316,11 @@ function createWindow() {
     rendererReady = true;
     sendUpdateState();
     dispatchPendingPdf().catch((error) => console.error('Apertura PDF iniziale:', error));
-    setTimeout(() => {
-      checkForAppUpdate(false).catch((error) => console.error('Controllo aggiornamenti:', error));
-    }, 4000);
+    if (process.platform !== 'win32') {
+      setTimeout(() => {
+        checkForAppUpdate(false).catch((error) => console.error('Controllo aggiornamenti:', error));
+      }, 4000);
+    }
   });
   mainWindow.on('closed', () => {
     rendererReady = false;
@@ -320,11 +340,19 @@ if (process.platform === 'win32') {
   }));
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   if (!hasSingleInstanceLock) return;
   configureApplicationMenu();
-  startBackend();
-  createWindow();
+  try {
+    await startBackend();
+    createWindow();
+  } catch (error) {
+    await dialog.showErrorBox(
+      'Avvio non riuscito',
+      `Il motore PDF locale non è disponibile. Riavvia l’app o reinstallala.\n\n${error?.message || String(error)}`,
+    );
+    app.quit();
+  }
 });
 
 app.on('second-instance', (_event, commandLine, workingDirectory) => {
@@ -387,7 +415,7 @@ ipcMain.handle('save-pdf-as', async (event, defaultName) => {
   assertTrustedSender(event);
   const result = await dialog.showSaveDialog({
     title: 'Salva una nuova versione del PDF',
-    defaultPath: typeof defaultName === 'string' ? path.basename(defaultName) : 'documento.pdf',
+    defaultPath: typeof defaultName === 'string' ? defaultName : 'documento.pdf',
     filters: [{ name: 'Documento PDF', extensions: ['pdf'] }],
     properties: ['createDirectory', 'showOverwriteConfirmation'],
   });
@@ -406,6 +434,7 @@ ipcMain.handle('check-for-updates', (event, options = {}) => {
 
 ipcMain.handle('download-update', async (event) => {
   assertTrustedSender(event);
+  if (process.platform === 'win32') return checkForAppUpdate(true);
   if (!app.isPackaged) return checkForAppUpdate(true);
   if (updateState.phase !== 'available') return updateState;
   sendUpdateState({ phase: 'downloading', manual: true, percent: 0, error: '' });
@@ -420,7 +449,9 @@ ipcMain.handle('download-update', async (event) => {
 ipcMain.handle('install-update', (event) => {
   assertTrustedSender(event);
   if (!app.isPackaged || updateState.phase !== 'downloaded') return false;
-  stopBackend().then(() => autoUpdater.quitAndInstall(false, true));
+  stopBackend()
+    .finally(() => autoUpdater.quitAndInstall(false, true))
+    .catch((error) => console.error('Chiusura backend durante aggiornamento:', error));
   return true;
 });
 

@@ -5,6 +5,7 @@ const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 
 const MAX_PDF_BYTES = 100 * 1024 * 1024;
+const MAX_SESSION_AGE_MS = 24 * 60 * 60 * 1000;
 const POST_ENDPOINTS = new Set([
   '/pdf-info', '/inspect-text', '/search-text', '/unlock-pdf', '/reorder-pages',
   '/insert-pdf', '/add-text', '/edit-text', '/batch-edit-text', '/find-repeated-text',
@@ -27,10 +28,15 @@ function isDirectChild(parentDirectory, filePath) {
   try {
     const expectedParent = fs.statSync(parentDirectory);
     const actualParent = fs.statSync(path.dirname(filePath));
-    return expectedParent.isDirectory()
-      && actualParent.isDirectory()
-      && expectedParent.dev === actualParent.dev
-      && expectedParent.ino === actualParent.ino;
+    if (!expectedParent.isDirectory() || !actualParent.isDirectory()) return false;
+    if (expectedParent.dev || expectedParent.ino || actualParent.dev || actualParent.ino) {
+      return expectedParent.dev === actualParent.dev && expectedParent.ino === actualParent.ino;
+    }
+    const expectedPath = fs.realpathSync(parentDirectory);
+    const actualPath = fs.realpathSync(path.dirname(filePath));
+    return process.platform === 'win32'
+      ? expectedPath.toLocaleLowerCase('en-US') === actualPath.toLocaleLowerCase('en-US')
+      : expectedPath === actualPath;
   } catch {
     return false;
   }
@@ -106,15 +112,26 @@ class BackendSession {
       try {
         const owner = JSON.parse(fs.readFileSync(path.join(directory, 'owner.json'), 'utf8'));
         if (!Number.isInteger(owner.pid) || owner.pid < 1) continue;
-        try { process.kill(owner.pid, 0); continue; } catch (error) { if (error.code !== 'ESRCH') continue; }
-        fs.rmSync(directory, { recursive: true, force: true });
+        const ownerFile = path.join(directory, 'owner.json');
+        const createdAt = Number.isFinite(owner.createdAt)
+          ? owner.createdAt
+          : fs.statSync(ownerFile).mtimeMs;
+        const expired = Date.now() - createdAt > MAX_SESSION_AGE_MS;
+        let ownerIsLive = false;
+        try { process.kill(owner.pid, 0); ownerIsLive = true; } catch (error) { if (error.code !== 'ESRCH') continue; }
+        if (ownerIsLive && !expired) continue;
+        fs.rmSync(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
       } catch { /* Never delete an unrecognized directory. */ }
     }
   }
   constructor({ executable, args, cwd, fonts, tempRoot, log }) {
     this.directory = fs.realpathSync(fs.mkdtempSync(path.join(tempRoot, 'session-')));
     fs.chmodSync(this.directory, 0o700);
-    fs.writeFileSync(path.join(this.directory, 'owner.json'), JSON.stringify({ pid: process.pid }), { mode: 0o600 });
+    fs.writeFileSync(
+      path.join(this.directory, 'owner.json'),
+      JSON.stringify({ pid: process.pid, createdAt: Date.now() }),
+      { mode: 0o600 },
+    );
     this.files = new FileAccess(this.directory);
     this.token = crypto.randomBytes(32).toString('hex');
     this.id = crypto.randomUUID();
@@ -130,7 +147,12 @@ class BackendSession {
     env.TOMORROW_NOW_PDF_FONTS_DIR = fonts;
     // Compatibility with backend builds distributed before the cross-platform rename.
     env.MAC_PDF_EDITOR_FONTS_DIR = fonts;
-    this.process = spawn(executable, args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe', 'pipe'] });
+    this.process = spawn(executable, args, {
+      cwd,
+      env,
+      stdio: ['pipe', 'pipe', 'pipe', 'pipe'],
+      windowsHide: process.platform === 'win32',
+    });
     this.process.stdout.on('data', log);
     this.process.stderr.on('data', log);
     this.process.stdin.on('error', () => {});
@@ -215,7 +237,7 @@ class BackendSession {
       const timer = setTimeout(() => this.process.kill('SIGKILL'), 4000);
       await this.closed;
       clearTimeout(timer);
-      fs.rmSync(this.directory, { recursive: true, force: true });
+      fs.rmSync(this.directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     })();
     return this.stopPromise;
   }

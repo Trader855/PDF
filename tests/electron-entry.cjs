@@ -3,4 +3,5 @@ const { app } = require('electron');
 const path = require('node:path');
 if (!process.env.QA_USER_DATA) throw new Error('QA_USER_DATA required');
 app.setPath('userData', path.resolve(process.env.QA_USER_DATA));
+app.setPath('logs', path.join(path.resolve(process.env.QA_USER_DATA), 'logs'));
 require('../main');

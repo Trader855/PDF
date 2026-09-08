@@ -3,15 +3,18 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
-const { _electron } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
+const { _electron } = require(process.env.PLAYWRIGHT_MODULE || 'playwright-core');
+const { virtualEnvironmentPython } = require('../platform-runtime');
 const root = path.resolve(__dirname, '..');
 
 (async () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'pdf-electron-qa-'));
-  const source = path.join(temp, 'source.pdf');
-  const locked = path.join(temp, 'locked.pdf');
-  execFileSync(path.join(root, '.build-venv/bin/python'), ['-c',
-    'import fitz,sys; from pathlib import Path; p=Path(sys.argv[1]); d=fitz.open(); [(d.new_page().insert_text((72,72),"DATA 05/08/2026 PAGINA %d"%i)) for i in range(1,26)]; d.save(p/"source.pdf"); d.save(p/"locked.pdf",encryption=fitz.PDF_ENCRYPT_AES_256,owner_pw="owner",user_pw="test-password"); d.close()', temp]);
+  const documents = path.join(temp, 'Documenti Àccentati');
+  fs.mkdirSync(documents);
+  const source = path.join(documents, 'relazione finale.pdf');
+  const locked = path.join(documents, 'allegato protetto.pdf');
+  execFileSync(virtualEnvironmentPython(root), ['-c',
+    'import fitz,sys; from pathlib import Path; p=Path(sys.argv[1]); d=fitz.open(); [(d.new_page().insert_text((72,72),"DATA 05/08/2026 PAGINA %d"%i)) for i in range(1,26)]; d.save(p/"relazione finale.pdf"); d.save(p/"allegato protetto.pdf",encryption=fitz.PDF_ENCRYPT_AES_256,owner_pw="owner",user_pw="test-password"); d.close()', documents]);
   const errors = [];
   console.log('QA: launch isolated Electron');
   const application = await _electron.launch({ executablePath: require('electron'),
@@ -24,6 +27,7 @@ const root = path.resolve(__dirname, '..');
     page.on('pageerror', (error) => errors.push(error.message));
     page.on('console', (message) => { if (message.type() === 'error') { console.log('Renderer error:', message.text()); errors.push(message.text()); } });
     await page.waitForFunction(() => !!window.desktopAPI && !!document.querySelector('#pdf-file-input'));
+    assert.equal(await page.evaluate(() => window.desktopAPI.platform), process.platform);
     await page.locator('#pdf-file-input').setInputFiles(source);
     console.log('QA: input selected');
     await page.waitForFunction(() => document.querySelector('#page-indicator').textContent.includes('25'), { timeout: 30000 });
@@ -50,15 +54,15 @@ const root = path.resolve(__dirname, '..');
     await page.waitForFunction(() => document.querySelector('#status').textContent.includes('pagine inserite'));
     await page.locator('#unlock-dialog').waitFor({ state: 'hidden' });
     assert.equal(await page.evaluate(() => 'getBackendToken' in window.desktopAPI), false);
-    const rejected = await page.evaluate(async () => {
-      try { await window.desktopAPI.readFile('/private/tmp/not-authorized.pdf'); return false; } catch { return true; }
-    });
+    const rejected = await page.evaluate(async (unauthorizedPath) => {
+      try { await window.desktopAPI.readFile(unauthorizedPath); return false; } catch { return true; }
+    }, path.join(temp, 'not-authorized.pdf'));
     assert.equal(rejected, true);
     assert.deepEqual(errors, []);
     console.log('Electron UI QA OK: open, edit, font preview, page 25, bounded thumbnails, password-protected insertion, IPC boundary.');
   } catch (error) {
     console.log('QA status:', await page.locator('#status').textContent());
-    await page.screenshot({ path: '/private/tmp/pdf-security-ui-failure.png' });
+    await page.screenshot({ path: path.join(os.tmpdir(), 'pdf-security-ui-failure.png') });
     throw error;
   } finally {
     console.log('QA: closing Electron');

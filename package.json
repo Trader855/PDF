@@ -1,6 +1,6 @@
 {
   "name": "mac-pdf-editor",
-  "version": "1.6.0-beta.1",
+  "version": "1.6.0-beta.2",
   "description": "Tomorrow Now PDF Editor: editor PDF locale per macOS e Windows",
   "author": "Tomorrow Now",
   "license": "AGPL-3.0-only",
@@ -19,6 +19,7 @@
     "test:real-pdf": "node scripts/run_venv_python.cjs -m unittest discover -s tests -v",
     "test:packaged": "node scripts/run_venv_python.cjs scripts/qa_packaged_backend.py",
     "test:ocr:windows": "node scripts/run_venv_python.cjs scripts/qa_windows_ocr.py",
+    "test:ui": "node scripts/qa_desktop_ui.cjs",
     "qa:release": "pnpm run test && pnpm run build:all && pnpm run dist:mac && pnpm run finalize:dmg && pnpm run test:packaged",
     "build:ocr": "CLANG_MODULE_CACHE_PATH=/tmp/mac-pdf-editor-clang-cache xcrun clang -fobjc-arc -framework Foundation -framework AppKit -framework Vision scripts/mac_pdf_ocr.m -O2 -o dist/mac-pdf-ocr",
     "build:backend": "node scripts/run_venv_python.cjs -m PyInstaller --noconfirm --clean --onefile --name mac-pdf-backend backend/main.py",
@@ -27,13 +28,14 @@
     "build:win": "pnpm run build:backend:win",
     "dist:mac": "electron-builder --mac dmg zip --arm64",
     "dist:win": "electron-builder --config electron-builder.windows.cjs --win nsis zip --x64 --publish never",
-    "qa:windows": "pnpm run test && pnpm run test:ocr:windows && pnpm run build:win && pnpm run dist:win && pnpm run test:packaged",
+    "qa:windows": "pnpm run test && pnpm run test:ocr:windows && pnpm run test:ui && pnpm run build:win && pnpm run dist:win && pnpm run test:packaged",
     "finalize:dmg": "node scripts/finalize_dmg.js"
   },
   "devDependencies": {
     "@electron/notarize": "2.5.0",
     "electron": "^44.1.1",
-    "electron-builder": "^26.15.3"
+    "electron-builder": "^26.15.3",
+    "playwright-core": "1.63.0"
   },
   "dependencies": {
     "electron-updater": "^6.8.9",

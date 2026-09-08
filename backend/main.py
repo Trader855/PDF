@@ -104,8 +104,6 @@ FONT_STYLE_LABELS = {
 @app.middleware("http")
 async def require_local_session_token(request: Request, call_next):
     """Solo il processo principale conosce il token, ricevuto attraverso stdin."""
-    if request.method == "OPTIONS":
-        return await call_next(request)
     if not API_TOKEN:
         return JSONResponse(status_code=503, content={"detail": "Sessione locale non inizializzata"})
     authorization = request.headers.get("authorization", "")
@@ -979,6 +977,9 @@ def ocr_helper_command(helper: Path, image_path: Path, languages: str) -> List[s
 
 
 def run_ocr_helper(helper: Path, image_path: Path, languages: str = "it-IT,en-US") -> List[Dict[str, Any]]:
+    subprocess_options: Dict[str, Any] = {}
+    if sys.platform == "win32":
+        subprocess_options["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     process = subprocess.run(
         ocr_helper_command(helper, image_path, languages),
         capture_output=True,
@@ -987,6 +988,7 @@ def run_ocr_helper(helper: Path, image_path: Path, languages: str = "it-IT,en-US
         errors="replace",
         timeout=20,
         check=False,
+        **subprocess_options,
     )
     if process.returncode != 0:
         raise RuntimeError(process.stderr.strip() or "OCR non riuscito")
@@ -1058,13 +1060,16 @@ def ocr_spans_inside_images(source_path: Path, page_num: int, page: fitz.Page, n
         return []
 
     pixmap = bounded_pixmap(page)
-    with tempfile.TemporaryDirectory(prefix="mac-pdf-inspect-", dir=SESSION_DIRECTORY) as directory:
-        image_path = Path(directory) / f"page-{page_num + 1}.png"
+    directory = Path(tempfile.mkdtemp(prefix="pdf-inspect-", dir=SESSION_DIRECTORY))
+    try:
+        image_path = directory / f"page-{page_num + 1}.png"
         pixmap.save(image_path)
         try:
             observations = run_ocr_helper(helper, image_path)
         except (OSError, RuntimeError, subprocess.TimeoutExpired):
             return []
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
     if not observations:
         return []
 
@@ -1208,13 +1213,22 @@ def ocr_pdf(req: OcrRequest):
                     (1 - y) * page.rect.height,
                 )
                 font_size = max(4.0, min(36.0, rect.height * 0.78))
+                bundled_font = register_bundled_font(
+                    page,
+                    "Liberation Sans",
+                    default_family="Liberation Sans",
+                    text=text,
+                )
+                font_name = bundled_font[0] if bundled_font else "helv"
+                if not bundled_font and not base14_font_supports_text(font_name, text):
+                    continue
                 result = page.insert_textbox(
-                    rect, text, fontsize=font_size, fontname="helv",
+                    rect, text, fontsize=font_size, fontname=font_name,
                     render_mode=3, overlay=True,
                 )
                 if result < 0:
                     page.insert_text(
-                        rect.bl, text, fontsize=font_size, fontname="helv",
+                        rect.bl, text, fontsize=font_size, fontname=font_name,
                         render_mode=3, overlay=True,
                     )
                 recognized += 1
@@ -1235,9 +1249,7 @@ def ocr_pdf(req: OcrRequest):
             document.close()
         raise HTTPException(status_code=500, detail=f"OCR non riuscito: {error}") from error
     finally:
-        for item in temp_dir.glob("*"):
-            item.unlink(missing_ok=True)
-        temp_dir.rmdir()
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 @app.post("/pdf-info")
@@ -1729,6 +1741,8 @@ if __name__ == "__main__":
         timer.start()
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    if sys.platform == "win32" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
     sock.bind(("127.0.0.1", 0))
     sock.listen(128)
     server = uvicorn.Server(uvicorn.Config(app, log_level="warning", access_log=False, limit_concurrency=4))

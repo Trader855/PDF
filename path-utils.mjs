@@ -5,19 +5,22 @@ export function createFilePaths(platform = 'posix') {
     const source = String(value || '').replaceAll('\\', '/');
     const driveMatch = isWindows ? source.match(/^([A-Za-z]:)(?:\/|$)/) : null;
     const drive = driveMatch?.[1] || '';
-    const absolute = Boolean(drive || source.startsWith('/'));
-    const body = drive ? source.slice(drive.length) : source;
+    const unc = isWindows && !drive && source.startsWith('//');
+    const absolute = Boolean(drive || unc || source.startsWith('/'));
+    const body = drive ? source.slice(drive.length) : (unc ? source.replace(/^\/+/, '') : source);
     const parts = [];
+    const minimumParts = unc ? 2 : 0;
     body.split('/').forEach((part) => {
       if (!part || part === '.') return;
       if (part === '..') {
-        if (parts.length && parts.at(-1) !== '..') parts.pop();
+        if (parts.length > minimumParts && parts.at(-1) !== '..') parts.pop();
         else if (!absolute) parts.push(part);
       } else {
         parts.push(part);
       }
     });
     if (drive) return parts.length ? `${drive}/${parts.join('/')}` : `${drive}/`;
+    if (unc) return parts.length ? `//${parts.join('/')}` : '//';
     if (absolute) return `/${parts.join('/')}` || '/';
     return parts.join('/') || '.';
   }

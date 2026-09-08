@@ -57,6 +57,9 @@ jobs:
       - name: Verify native Windows OCR
         run: pnpm run test:ocr:windows
 
+      - name: Verify Electron UI on Windows
+        run: pnpm run test:ui
+
       - name: Build Windows backend and installer
         run: |
           pnpm run build:win
@@ -74,4 +77,3 @@ jobs:
           path: |
             release/Tomorrow-Now-PDF-Editor-*-Windows-x64.exe
             release/Tomorrow-Now-PDF-Editor-*-Windows-x64.zip
-            release/latest.yml

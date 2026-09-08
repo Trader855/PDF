@@ -17,6 +17,15 @@ test('Windows path comparisons are case-insensitive', () => {
   assert.equal(paths.resolve('C:\\PDF\\FILE.pdf'), paths.resolve('c:/pdf/file.pdf'));
 });
 
+test('Windows UNC paths retain their server and share root', () => {
+  const paths = createFilePaths('win32');
+  const source = '\\\\server\\share\\Clienti À\\cartella\\..\\polizza.pdf';
+  assert.equal(paths.normalize(source), '//server/share/Clienti À/polizza.pdf');
+  assert.equal(paths.dirname(source), '//server/share/Clienti À');
+  assert.equal(paths.join(paths.dirname(source), 'copia.pdf'), '//server/share/Clienti À/copia.pdf');
+  assert.equal(paths.normalize('//server/share/../../escape.pdf'), '//server/share/escape.pdf');
+});
+
 test('macOS paths preserve POSIX semantics', () => {
   const paths = createFilePaths('darwin');
   assert.equal(paths.normalize('/Users/ada/../ada/file.pdf'), '/Users/ada/file.pdf');

@@ -222,7 +222,7 @@ function renderUpdateStatus(status) {
   ui.installUpdateButton.classList.add("hidden");
   ui.downloadUpdateButton.disabled = false;
   ui.installUpdateButton.disabled = false;
-  ui.updateLaterButton.textContent = ["up-to-date", "development", "error"].includes(phase) ? "Chiudi" : "Più tardi";
+  ui.updateLaterButton.textContent = ["up-to-date", "development", "unavailable", "error"].includes(phase) ? "Chiudi" : "Più tardi";
   ui.updateCurrentVersion.textContent = status.currentVersion || "—";
   ui.updateLatestVersion.textContent = status.latestVersion || "—";
 
@@ -257,6 +257,9 @@ function renderUpdateStatus(status) {
   } else if (phase === "development") {
     ui.updateTitle.textContent = "Aggiornamenti pronti";
     ui.updateDescription.textContent = "Il controllo reale sarà attivo nella versione installata e firmata dell’app. In modalità sviluppo è stato disattivato.";
+  } else if (phase === "unavailable") {
+    ui.updateTitle.textContent = "Aggiornamenti Windows in preparazione";
+    ui.updateDescription.textContent = "Questa beta non installa aggiornamenti Mac. Le versioni di prova Windows vengono distribuite soltanto dal canale ufficiale Tomorrow Now.";
   } else if (phase === "error") {
     ui.updateTitle.textContent = "Controllo non riuscito";
     ui.updateDescription.textContent = status.error || "Non è stato possibile contattare il server degli aggiornamenti. Riprova più tardi.";

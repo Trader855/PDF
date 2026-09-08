@@ -69,6 +69,7 @@ test('Actual backend: private pipe, ephemeral port, auth, fonts, passwords, roun
     assert.equal((await session.request('/health')).session_id, session.id);
     assert.equal(contacted, false);
     assert.equal((await fetch(session.base + '/health')).status, 401);
+    assert.equal((await fetch(session.base + '/health', { method: 'OPTIONS' })).status, 401);
     assert.equal((await fetch(session.base + '/health', { headers: { Authorization: 'Bearer é' } })).status, 401);
     assert.equal((await session.request('/fonts')).fonts.length, 20);
     const fonts = await session.request('/fonts');
@@ -111,12 +112,14 @@ test('Actual backend: private pipe, ephemeral port, auth, fonts, passwords, roun
 test('Abandoned session cleanup never touches unrelated or live directories', () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'pdf-cleanup-'));
   try {
-    for (const name of ['session-stale', 'session-live', 'unrelated']) fs.mkdirSync(path.join(temp, name));
+    for (const name of ['session-stale', 'session-live', 'session-expired', 'unrelated']) fs.mkdirSync(path.join(temp, name));
     fs.writeFileSync(path.join(temp, 'session-stale/owner.json'), JSON.stringify({ pid: 2147483647 }));
-    fs.writeFileSync(path.join(temp, 'session-live/owner.json'), JSON.stringify({ pid: process.pid }));
+    fs.writeFileSync(path.join(temp, 'session-live/owner.json'), JSON.stringify({ pid: process.pid, createdAt: Date.now() }));
+    fs.writeFileSync(path.join(temp, 'session-expired/owner.json'), JSON.stringify({ pid: process.pid, createdAt: Date.now() - 2 * 24 * 60 * 60 * 1000 }));
     BackendSession.cleanAbandoned(temp);
     assert.equal(fs.existsSync(path.join(temp, 'session-stale')), false);
     assert.equal(fs.existsSync(path.join(temp, 'session-live')), true);
+    assert.equal(fs.existsSync(path.join(temp, 'session-expired')), false);
     assert.equal(fs.existsSync(path.join(temp, 'unrelated')), true);
   } finally { fs.rmSync(temp, { recursive: true, force: true }); }
 });
@@ -130,4 +133,14 @@ test('Renderer security policy and pinned engines do not regress', () => {
   assert.doesNotMatch(renderer, /window\.prompt|getBackendToken|fetch\(/);
   assert.doesNotMatch(preload, /getBackendToken|file\?\.path/);
   assert.match(renderer, /IntersectionObserver/);
+});
+
+test('Windows beta keeps its updater isolated from the Mac release channel', () => {
+  const builder = require('../electron-builder.windows.cjs');
+  const main = fs.readFileSync(path.join(root, 'main.js'), 'utf8');
+  const desktopSecurity = fs.readFileSync(path.join(root, 'desktop-security.js'), 'utf8');
+  assert.equal(builder.publish, null);
+  assert.equal(builder.fileAssociations[0].name, 'TomorrowNowPDFDocument');
+  assert.match(main, /process\.platform === 'win32' \? 'unavailable'/);
+  assert.match(desktopSecurity, /windowsHide: process\.platform === 'win32'/);
 });

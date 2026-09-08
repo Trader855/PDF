@@ -1,7 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import fitz
 from fastapi import HTTPException
@@ -64,6 +64,17 @@ class SecurityRegressionTests(unittest.TestCase):
         self.assertIn('-NonInteractive', command)
         self.assertIn('-ExecutionPolicy', command)
         self.assertEqual(command[-3:], [str(helper), str(image), 'it-IT,en-US'])
+
+    def test_windows_ocr_process_never_opens_a_console_window(self):
+        completed = Mock(returncode=0, stdout='[]', stderr='')
+        with patch.object(main.sys, 'platform', 'win32'), \
+                patch.object(main, 'ocr_helper_command', return_value=['powershell.exe']), \
+                patch.object(main.subprocess, 'run', return_value=completed) as run:
+            self.assertEqual(main.run_ocr_helper(Path('helper.ps1'), Path('page.png')), [])
+        self.assertEqual(
+            run.call_args.kwargs['creationflags'],
+            getattr(main.subprocess, 'CREATE_NO_WINDOW', 0),
+        )
 
     def test_compression_preserves_transparent_image_mask(self):
         with tempfile.TemporaryDirectory() as directory:

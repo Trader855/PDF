@@ -5,6 +5,7 @@ const {
   dmg: _dmg,
   extraResources: _macResources,
   mac: _mac,
+  publish: _publish,
   ...shared
 } = build;
 
@@ -12,6 +13,7 @@ module.exports = {
   ...shared,
   appId: 'tech.tomorrownow.pdfeditor',
   productName: 'Tomorrow Now PDF Editor',
+  publish: null,
   artifactName: 'Tomorrow-Now-PDF-Editor-${version}-Windows-${arch}.${ext}',
   extraResources: [
     {
@@ -29,9 +31,8 @@ module.exports = {
   ],
   fileAssociations: [{
     ext: 'pdf',
-    name: 'PDF document',
+    name: 'TomorrowNowPDFDocument',
     description: 'Documento PDF',
-    role: 'Editor',
   }],
   win: {
     icon: 'build/icon_1024.png',
