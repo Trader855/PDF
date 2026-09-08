@@ -1,4 +1,5 @@
 import * as pdfjsLib from './node_modules/pdfjs-dist/build/pdf.mjs';
+import { createFilePaths } from './path-utils.mjs';
 const MAX_PDF_SCALE = 1.5;
 const THUMBNAIL_WIDTH = 145;
 const TOMORROW_NOW_URL = "https://www.tomorrownow.tech";
@@ -8,45 +9,8 @@ let thumbnailObserver = null;
 const thumbnailTasks = new Set();
 let pdfLoadingTask = null;
 
-const filePaths = Object.freeze({
-  normalize(value) {
-    const source = String(value || "");
-    const absolute = source.startsWith("/");
-    const parts = [];
-    source.split("/").forEach((part) => {
-      if (!part || part === ".") return;
-      if (part === "..") parts.pop();
-      else parts.push(part);
-    });
-    return `${absolute ? "/" : ""}${parts.join("/")}` || (absolute ? "/" : ".");
-  },
-  basename(value) {
-    const normalized = this.normalize(value).replace(/\/$/, "");
-    return normalized.slice(normalized.lastIndexOf("/") + 1);
-  },
-  dirname(value) {
-    const normalized = this.normalize(value).replace(/\/$/, "");
-    const index = normalized.lastIndexOf("/");
-    if (index < 0) return ".";
-    return index === 0 ? "/" : normalized.slice(0, index);
-  },
-  parse(value) {
-    const base = this.basename(value);
-    const dot = base.lastIndexOf(".");
-    const hasExtension = dot > 0;
-    return {
-      base,
-      name: hasExtension ? base.slice(0, dot) : base,
-      ext: hasExtension ? base.slice(dot) : "",
-    };
-  },
-  join(...parts) {
-    return this.normalize(parts.filter(Boolean).join("/"));
-  },
-  resolve(value) {
-    return this.normalize(value);
-  },
-});
+const browserPlatform = navigator.userAgent.includes('Windows') ? 'win32' : 'darwin';
+const filePaths = createFilePaths(appBridge?.platform || browserPlatform);
 
 if (pdfjsLib) {
   pdfjsLib.GlobalWorkerOptions.workerSrc = "node_modules/pdfjs-dist/build/pdf.worker.mjs";
@@ -267,7 +231,7 @@ function renderUpdateStatus(status) {
     ui.updateDescription.textContent = "Cerco una versione più recente su GitHub…";
   } else if (phase === "available") {
     ui.updateTitle.textContent = "È disponibile un aggiornamento";
-    ui.updateDescription.textContent = `Mac PDF Editor ${status.latestVersion || ""} è pronto per essere scaricato.`;
+    ui.updateDescription.textContent = `Tomorrow Now PDF Editor ${status.latestVersion || ""} è pronto per essere scaricato.`;
     ui.downloadUpdateButton.classList.remove("hidden");
     if (status.releaseNotes) {
       ui.updateNotes.textContent = status.releaseNotes;
@@ -289,7 +253,7 @@ function renderUpdateStatus(status) {
     ui.installUpdateButton.classList.remove("hidden");
   } else if (phase === "up-to-date") {
     ui.updateTitle.textContent = "Sei già aggiornato";
-    ui.updateDescription.textContent = `Mac PDF Editor ${status.currentVersion || ""} è la versione più recente.`;
+    ui.updateDescription.textContent = `Tomorrow Now PDF Editor ${status.currentVersion || ""} è la versione più recente.`;
   } else if (phase === "development") {
     ui.updateTitle.textContent = "Aggiornamenti pronti";
     ui.updateDescription.textContent = "Il controllo reale sarà attivo nella versione installata e firmata dell’app. In modalità sviluppo è stato disattivato.";
@@ -487,7 +451,7 @@ async function ensureBackend() {
   if (state.backendReady) return;
 
   if (!appBridge) {
-    throw new Error("il backend locale è disponibile soltanto nell’app Mac installata");
+    throw new Error("il backend locale è disponibile soltanto nell’app desktop installata");
   }
   await appBridge.request('/health');
   state.backendReady = true;
@@ -721,7 +685,7 @@ function selectSpan(span, box) {
 
 async function inspectCurrentPage() {
   if (!activePdfPath()) {
-    throw new Error("hai aperto index.html in Chrome. Usa “Mac PDF Editor.app” per modificare e salvare il PDF");
+    throw new Error("hai aperto index.html nel browser. Avvia Tomorrow Now PDF Editor per modificare e salvare il PDF");
   }
 
   const result = await apiRequest("/inspect-text", {
@@ -2122,7 +2086,7 @@ function showProcessDialog(kind) {
   ui.processTitle.textContent = compressing ? "Comprimi PDF" : "Riconosci testo (OCR)";
   ui.processDescription.textContent = compressing
     ? "Crea una copia più leggera, ideale per allegati e-mail."
-    : "Rende selezionabile e ricercabile il testo delle pagine scansionate usando il motore locale di macOS.";
+    : "Rende selezionabile e ricercabile il testo delle pagine scansionate usando il motore OCR locale del sistema.";
   ui.compressionOptions.classList.toggle("hidden", !compressing);
   ui.ocrOptions.classList.toggle("hidden", compressing);
   ui.runProcessButton.textContent = compressing ? "Comprimi" : "Avvia OCR";
@@ -2207,7 +2171,7 @@ function renderSavedMarks() {
   clear.type = 'button'; clear.className = 'btn'; clear.textContent = 'Elimina firme salvate';
   clear.disabled = savedSignatureMarks().length === 0;
   clear.addEventListener('click', () => {
-    if (!window.confirm('Eliminare tutte le firme e i timbri salvati su questo Mac?')) return;
+    if (!window.confirm('Eliminare tutte le firme e i timbri salvati su questo computer?')) return;
     localStorage.removeItem('macPdfEditor.savedMarks'); renderSavedMarks();
   });
   fragment.appendChild(clear);
@@ -2704,7 +2668,7 @@ ui.nextButton.addEventListener("click", () => {
 ui.editButton.addEventListener("click", () => {
   if (!state.pdf) return;
   if (!activePdfPath()) {
-    setStatus("Questa è la versione aperta in Chrome. Chiudila e avvia “Mac PDF Editor.app” dalla cartella del progetto.", true);
+    setStatus("Questa è la versione aperta nel browser. Chiudila e avvia Tomorrow Now PDF Editor.", true);
     return;
   }
 
@@ -2726,7 +2690,7 @@ ui.editButton.addEventListener("click", () => {
 ui.addTextButton.addEventListener("click", () => {
   if (!state.pdf) return;
   if (!activePdfPath()) {
-    setStatus("Questa è la versione aperta in Chrome. Usa “Mac PDF Editor.app” per aggiungere e salvare testo.", true);
+    setStatus("Questa è la versione aperta nel browser. Usa Tomorrow Now PDF Editor per aggiungere e salvare testo.", true);
     return;
   }
 
@@ -2822,7 +2786,7 @@ ui.saveButton.addEventListener("click", () => {
 
 ui.tomorrowNowBanner.addEventListener("click", () => {
   if (!appBridge) {
-    setStatus("Il collegamento a Tomorrow Now è disponibile nell’app Mac installata.", true);
+    setStatus("Il collegamento a Tomorrow Now è disponibile nell’app desktop installata.", true);
     return;
   }
   appBridge.openExternal(TOMORROW_NOW_URL).catch((error) => {
@@ -2831,6 +2795,7 @@ ui.tomorrowNowBanner.addEventListener("click", () => {
 });
 
 if (appBridge) {
+  appBridge.onOpenPdf((filePath) => openPdfSafely(filePath));
   appBridge.onUpdateStatus((status) => renderUpdateStatus(status));
   appBridge.getUpdateStatus()
     .then((status) => renderUpdateStatus(status))
@@ -2839,7 +2804,7 @@ if (appBridge) {
 
 ui.checkUpdatesButton.addEventListener("click", () => {
   if (!appBridge) {
-    renderUpdateStatus({ phase: "error", manual: true, error: "Il controllo è disponibile nell’app Mac installata." });
+    renderUpdateStatus({ phase: "error", manual: true, error: "Il controllo è disponibile nell’app desktop installata." });
     return;
   }
   renderUpdateStatus({

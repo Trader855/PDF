@@ -49,7 +49,8 @@ class FileAccess {
   }
   read(filePath) {
     const canonical = this.require(filePath);
-    const fd = fs.openSync(canonical, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+    const noFollow = fs.constants.O_NOFOLLOW ?? 0;
+    const fd = fs.openSync(canonical, fs.constants.O_RDONLY | noFollow);
     try {
       const stat = fs.fstatSync(fd);
       const entry = this.allowed.get(canonical);
@@ -105,9 +106,14 @@ class BackendSession {
     this.stopped = false;
     this.pending = 0;
     this.queue = Promise.resolve();
-    const env = Object.fromEntries(['PATH', 'HOME', 'TMPDIR', 'LANG', 'LC_ALL', 'LC_CTYPE']
+    const env = Object.fromEntries([
+      'PATH', 'HOME', 'TMPDIR', 'TEMP', 'TMP', 'USERPROFILE', 'LOCALAPPDATA',
+      'APPDATA', 'SystemRoot', 'WINDIR', 'LANG', 'LC_ALL', 'LC_CTYPE',
+    ]
       .filter((key) => process.env[key] !== undefined).map((key) => [key, process.env[key]]));
     env.PYTHONUNBUFFERED = '1';
+    env.TOMORROW_NOW_PDF_FONTS_DIR = fonts;
+    // Compatibility with backend builds distributed before the cross-platform rename.
     env.MAC_PDF_EDITOR_FONTS_DIR = fonts;
     this.process = spawn(executable, args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe', 'pipe'] });
     this.process.stdout.on('data', log);

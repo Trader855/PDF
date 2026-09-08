@@ -56,6 +56,15 @@ class SecurityRegressionTests(unittest.TestCase):
         request = main.FindRepeatedTextRequest(file_path='source.pdf', text='06')
         self.assertFalse(request.include_ocr)
 
+    def test_windows_ocr_helper_uses_noninteractive_powershell(self):
+        helper = Path('C:/Program Files/Tomorrow Now/windows_pdf_ocr.ps1')
+        image = Path('C:/Temp/page 1.png')
+        with patch.object(main.shutil, 'which', return_value='C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe'):
+            command = main.ocr_helper_command(helper, image, 'it-IT,en-US')
+        self.assertIn('-NonInteractive', command)
+        self.assertIn('-ExecutionPolicy', command)
+        self.assertEqual(command[-3:], [str(helper), str(image), 'it-IT,en-US'])
+
     def test_compression_preserves_transparent_image_mask(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

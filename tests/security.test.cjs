@@ -6,7 +6,9 @@ const path = require('node:path');
 const net = require('node:net');
 const { execFileSync } = require('node:child_process');
 const { FileAccess, BackendSession, MAX_PDF_BYTES } = require('../desktop-security');
+const { virtualEnvironmentPython } = require('../platform-runtime');
 const root = path.resolve(__dirname, '..');
+const python = virtualEnvironmentPython(root);
 
 test('File capabilities: unauthorized paths, symlinks, replacement, size and one-shot save', () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'pdf-security-'));
@@ -42,10 +44,10 @@ test('Actual backend: private pipe, ephemeral port, auth, fonts, passwords, roun
   await new Promise((resolve) => { decoy.once('error', resolve); decoy.listen(8000, '127.0.0.1', resolve); });
   let session;
   try {
-    execFileSync(path.join(root, '.build-venv/bin/python'), ['-c',
+    execFileSync(python, ['-c',
       'import fitz,sys; from pathlib import Path; p=Path(sys.argv[1]); d=fitz.open(); page=d.new_page(); page.insert_text((72,72),"05/08/2026"); d.save(p/"source.pdf"); d.save(p/"locked.pdf", encryption=fitz.PDF_ENCRYPT_AES_256, owner_pw="owner-test", user_pw="secret-test"); d.close()', temp]);
     const packaged = process.env.QA_BACKEND_EXECUTABLE;
-    session = new BackendSession({ executable: packaged || path.join(root, '.build-venv/bin/python'),
+    session = new BackendSession({ executable: packaged || python,
       args: packaged ? [] : [path.join(root, 'backend/main.py')], cwd: root,
       fonts: process.env.QA_FONTS_DIRECTORY || path.join(root, 'assets/fonts'), tempRoot: temp, log: () => {} });
     await session.ready;

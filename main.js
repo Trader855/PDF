@@ -1,6 +1,7 @@
 const { app, BrowserWindow, dialog, ipcMain, Menu, shell } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const { BackendSession } = require('./desktop-security');
+const { backendLaunchConfiguration, pdfArgumentFromCommandLine } = require('./platform-runtime');
 const fs = require('fs');
 const path = require('path');
 
@@ -15,6 +16,8 @@ let mainWindow = null;
 let updaterConfigured = false;
 let updateCheckActive = false;
 let activeCheckIsManual = false;
+let rendererReady = false;
+const pendingPdfPaths = [];
 let updateState = {
   phase: 'idle',
   currentVersion: app.getVersion(),
@@ -34,24 +37,18 @@ function startBackend() {
   let logBytes = fs.existsSync(logPath) ? fs.statSync(logPath).size : 0;
   backendLog.write(`\n--- Avvio backend ${new Date().toISOString()} ---\n`);
 
-  const backendExecutable = app.isPackaged
-    ? path.join(process.resourcesPath, 'backend', 'mac-pdf-backend')
-    : path.join(__dirname, '.build-venv', 'bin', 'python');
-  const backendArguments = app.isPackaged
-    ? []
-    : [path.join(__dirname, 'backend', 'main.py')];
-  const backendDirectory = app.isPackaged
-    ? path.dirname(backendExecutable)
-    : __dirname;
-  const fontsDirectory = app.isPackaged
-    ? path.join(process.resourcesPath, 'fonts')
-    : path.join(__dirname, 'assets', 'fonts');
+  const runtime = backendLaunchConfiguration({
+    isPackaged: app.isPackaged,
+    platform: process.platform,
+    resourcesPath: process.resourcesPath,
+    projectDirectory: __dirname,
+  });
 
   const tempRoot = path.join(app.getPath('userData'), 'pdf-sessions');
   fs.mkdirSync(tempRoot, { recursive: true, mode: 0o700 });
   BackendSession.cleanAbandoned(tempRoot);
-  backend = new BackendSession({ executable: backendExecutable, args: backendArguments,
-    cwd: backendDirectory, fonts: fontsDirectory, tempRoot, log: (data) => {
+  backend = new BackendSession({ executable: runtime.executable, args: runtime.args,
+    cwd: runtime.cwd, fonts: runtime.fonts, tempRoot, log: (data) => {
       if (logBytes >= 2 * 1024 * 1024) return;
       const chunk = data.subarray(0, 2 * 1024 * 1024 - logBytes);
       logBytes += chunk.length; backendLog.write(chunk);
@@ -61,6 +58,31 @@ function startBackend() {
 
 function stopBackend() {
   return backend?.stop() || Promise.resolve();
+}
+
+function queuePdfOpen(filePath) {
+  if (typeof filePath !== 'string' || path.extname(filePath).toLowerCase() !== '.pdf') return;
+  pendingPdfPaths.push(filePath);
+  dispatchPendingPdf().catch((error) => console.error('Apertura PDF dal sistema:', error));
+}
+
+async function dispatchPendingPdf() {
+  if (!rendererReady || !backend || !mainWindow || mainWindow.isDestroyed()) return;
+  while (pendingPdfPaths.length) {
+    const requestedPath = pendingPdfPaths.shift();
+    try {
+      const registeredPath = backend.files.register(requestedPath);
+      mainWindow.webContents.send('open-local-pdf', registeredPath);
+      app.addRecentDocument(registeredPath);
+    } catch (error) {
+      await dialog.showMessageBox(mainWindow, {
+        type: 'error',
+        title: 'PDF non aperto',
+        message: 'Il documento selezionato non può essere aperto.',
+        detail: error?.message || String(error),
+      });
+    }
+  }
 }
 
 function normaliseReleaseNotes(releaseNotes) {
@@ -254,7 +276,7 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 850,
-    titleBarStyle: 'hiddenInset',
+    ...(process.platform === 'darwin' ? { titleBarStyle: 'hiddenInset' } : {}),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       nodeIntegration: false,
@@ -273,14 +295,29 @@ function createWindow() {
   });
   mainWindow.loadFile(path.join(__dirname, 'index.html'));
   mainWindow.webContents.once('did-finish-load', () => {
+    rendererReady = true;
     sendUpdateState();
+    dispatchPendingPdf().catch((error) => console.error('Apertura PDF iniziale:', error));
     setTimeout(() => {
       checkForAppUpdate(false).catch((error) => console.error('Controllo aggiornamenti:', error));
     }, 4000);
   });
   mainWindow.on('closed', () => {
+    rendererReady = false;
     mainWindow = null;
   });
+}
+
+app.on('open-file', (event, filePath) => {
+  event.preventDefault();
+  queuePdfOpen(filePath);
+});
+
+if (process.platform === 'win32') {
+  queuePdfOpen(pdfArgumentFromCommandLine(process.argv, {
+    platform: process.platform,
+    workingDirectory: process.cwd(),
+  }));
 }
 
 app.whenReady().then(() => {
@@ -290,9 +327,16 @@ app.whenReady().then(() => {
   createWindow();
 });
 
-app.on('second-instance', () => {
+app.on('second-instance', (_event, commandLine, workingDirectory) => {
+  if (process.platform === 'win32') {
+    queuePdfOpen(pdfArgumentFromCommandLine(commandLine, {
+      platform: process.platform,
+      workingDirectory,
+    }));
+  }
   if (!mainWindow) return;
   if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
   mainWindow.focus();
 });
 

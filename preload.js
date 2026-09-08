@@ -1,6 +1,7 @@
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('desktopAPI', Object.freeze({
+  platform: process.platform,
   getPathForFile(file) {
     const filePath = webUtils.getPathForFile(file);
     if (!filePath) throw new Error('Seleziona un file PDF dal computer');
@@ -40,5 +41,12 @@ contextBridge.exposeInMainWorld('desktopAPI', Object.freeze({
     const listener = (_event, status) => callback(status);
     ipcRenderer.on('update-status', listener);
     return () => ipcRenderer.removeListener('update-status', listener);
+  },
+  onOpenPdf(callback) {
+    const listener = (_event, filePath) => {
+      if (typeof filePath === 'string') callback(filePath);
+    };
+    ipcRenderer.on('open-local-pdf', listener);
+    return () => ipcRenderer.removeListener('open-local-pdf', listener);
   },
 }));

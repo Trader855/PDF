@@ -1,10 +1,10 @@
 # Tomorrow Now PDF Editor
 
-Editor PDF locale per macOS, sviluppato da **Tomorrow Now**. Il documento resta
+Editor PDF locale per macOS e Windows, sviluppato da **Tomorrow Now**. Il documento resta
 sul dispositivo: il backend ascolta esclusivamente su `127.0.0.1` e la versione
 browser è progettata per lavorare direttamente nella memoria del browser.
 
-Questo repository contiene il sorgente completo dell'applicazione Mac ed è
+Questo repository contiene il sorgente completo dell'applicazione desktop ed è
 dedicato esclusivamente al PDF Editor. Sito istituzionale e altri prodotti
 Tomorrow Now sono mantenuti in repository separati.
 
@@ -31,9 +31,9 @@ Accanto a ogni pacchetto è indicato il tag del relativo
 - creazione e compilazione di campi modulo PDF interattivi;
 - compressione ottimizzata per l'invio via e-mail;
 - OCR locale in italiano e inglese per rendere ricercabili le scansioni;
-- ricerca in tutto il documento con `⌘F`, evidenziazione dei risultati e navigazione avanti/indietro;
+- ricerca in tutto il documento con `⌘F` su Mac o `Ctrl+F` su Windows, evidenziazione dei risultati e navigazione avanti/indietro;
 - controllo automatico discreto degli aggiornamenti GitHub, con indicatore “Aggiorna”, download su conferma e installazione al riavvio;
-- comando **Aiuto → Controlla aggiornamenti…** nella barra menu di macOS.
+- comando **Aiuto → Controlla aggiornamenti…** nella barra menu dell'app.
 - comando **Aiuto → Codice sorgente e licenze…** sempre collegato a questo
   repository pubblico;
 - barra Tomorrow Now sempre visibile in fondo all'app, con collegamento sicuro
@@ -61,6 +61,8 @@ dall'ambiente di build.
 
 L'avvio di sviluppo usa `.build-venv/bin/python`, lo stesso ambiente dei test.
 Non avviare il backend a mano: richiede la pipe privata aperta da Electron.
+
+Su Windows la directory dell'ambiente Python è `.build-venv\\Scripts`.
 
 ## Dati locali e limiti
 
@@ -90,15 +92,39 @@ Per includere un PDF reale nella regressione:
 MAC_PDF_EDITOR_REGRESSION_PDF="/percorso/documento.pdf" pnpm run test:real-pdf
 ```
 
-`pnpm run qa:release` ricostruisce l'app e verifica anche il backend realmente
-incluso nel pacchetto macOS. Una release è distribuibile solo se tutti i test
+`pnpm run qa:release` ricostruisce l'app Mac e verifica anche il backend realmente
+incluso nel pacchetto. `pnpm run qa:windows` esegue l'equivalente sul runner Windows.
+Una release è distribuibile solo se tutti i test
 terminano con esito positivo.
 
 ## Compatibilità
 
-La versione attuale è compatibile con Mac Apple Silicon (M1, M2, M3, M4 e successivi).
+La release pubblica attuale è compatibile con Mac Apple Silicon (M1, M2, M3, M4 e successivi).
+Il supporto Windows 10/11 x64 è in fase di validazione: la pipeline crea un
+installer NSIS e un archivio ZIP **non firmati**, conservati come artefatti di
+test per 14 giorni e non pubblicati automaticamente nelle Releases.
 
-## Installazione
+Su Windows il backend PyMuPDF resta locale come su Mac. L'OCR usa
+`Windows.Media.Ocr` e quindi richiede almeno una lingua OCR installata nel
+sistema; l'app prova prima italiano e inglese e poi le lingue del profilo utente.
+
+## Build e collaudo Windows
+
+La build Windows va eseguita su Windows perché PyInstaller non produce un
+eseguibile Windows partendo da macOS:
+
+```powershell
+py -3.11 -m venv .build-venv
+.\.build-venv\Scripts\python.exe -m pip install -r backend\requirements-build.txt
+pnpm install --frozen-lockfile
+pnpm run qa:windows
+```
+
+La workflow `Windows desktop validation` ripete automaticamente suite, OCR,
+packaging e round-trip del backend su un runner Windows x64. Solo dopo anche
+un collaudo manuale su Windows 10 e 11 il pacchetto potrà diventare una release.
+
+## Installazione Mac
 
 1. Scarica il file DMG dalla release più recente.
 2. Apri il DMG.

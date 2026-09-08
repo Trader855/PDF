@@ -23,7 +23,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 
-app = FastAPI(title="Mac PDF Editor Backend", docs_url=None, redoc_url=None, openapi_url=None)
+app = FastAPI(title="Tomorrow Now PDF Editor Backend", docs_url=None, redoc_url=None, openapi_url=None)
 OCR_INSPECTION_CACHE: Dict[Tuple[str, int, int, int], List[Dict[str, Any]]] = {}
 API_TOKEN = ""
 SESSION_DIRECTORY: Optional[Path] = None
@@ -280,7 +280,7 @@ def normalize_font_name(name: str) -> str:
 
 
 def bundled_fonts_directory() -> Path:
-    configured = os.environ.get("MAC_PDF_EDITOR_FONTS_DIR")
+    configured = os.environ.get("TOMORROW_NOW_PDF_FONTS_DIR") or os.environ.get("MAC_PDF_EDITOR_FONTS_DIR")
     if configured:
         return Path(configured).expanduser().resolve()
     return Path(__file__).resolve().parent.parent / "assets" / "fonts"
@@ -944,11 +944,59 @@ def compress_pdf(req: CompressRequest):
 
 
 def ocr_helper_path() -> Optional[Path]:
-    candidates = [
-        Path(sys.executable).resolve().parent / "mac-pdf-ocr",
-        Path(__file__).resolve().parent.parent / "dist" / "mac-pdf-ocr",
-    ]
+    project_root = Path(__file__).resolve().parent.parent
+    if sys.platform == "win32":
+        candidates = [
+            Path(sys.executable).resolve().parent / "windows_pdf_ocr.ps1",
+            project_root / "scripts" / "windows_pdf_ocr.ps1",
+        ]
+    else:
+        candidates = [
+            Path(sys.executable).resolve().parent / "mac-pdf-ocr",
+            project_root / "dist" / "mac-pdf-ocr",
+        ]
     return next((candidate for candidate in candidates if candidate.is_file()), None)
+
+
+def ocr_helper_command(helper: Path, image_path: Path, languages: str) -> List[str]:
+    if helper.suffix.casefold() == ".ps1":
+        powershell = shutil.which("powershell.exe") or shutil.which("powershell")
+        if not powershell:
+            raise RuntimeError("PowerShell non disponibile per il motore OCR locale")
+        return [
+            powershell,
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(helper),
+            str(image_path),
+            languages,
+        ]
+    return [str(helper), str(image_path), languages]
+
+
+def run_ocr_helper(helper: Path, image_path: Path, languages: str = "it-IT,en-US") -> List[Dict[str, Any]]:
+    process = subprocess.run(
+        ocr_helper_command(helper, image_path, languages),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=20,
+        check=False,
+    )
+    if process.returncode != 0:
+        raise RuntimeError(process.stderr.strip() or "OCR non riuscito")
+    try:
+        observations = json.loads(process.stdout or "[]")
+    except json.JSONDecodeError as error:
+        raise RuntimeError("Risposta OCR locale non valida") from error
+    if not isinstance(observations, list):
+        raise RuntimeError("Risposta OCR locale non valida")
+    return observations
 
 
 def int_to_pdf_color(value: int) -> Tuple[float, float, float]:
@@ -1013,19 +1061,16 @@ def ocr_spans_inside_images(source_path: Path, page_num: int, page: fitz.Page, n
     with tempfile.TemporaryDirectory(prefix="mac-pdf-inspect-", dir=SESSION_DIRECTORY) as directory:
         image_path = Path(directory) / f"page-{page_num + 1}.png"
         pixmap.save(image_path)
-        process = subprocess.run(
-            [str(helper), str(image_path), "it-IT,en-US"],
-            capture_output=True,
-            text=True,
-            timeout=20,
-            check=False,
-        )
-    if process.returncode != 0:
+        try:
+            observations = run_ocr_helper(helper, image_path)
+        except (OSError, RuntimeError, subprocess.TimeoutExpired):
+            return []
+    if not observations:
         return []
 
     native_rects = [fitz.Rect(span["bbox"]) for span in native_spans if span.get("text", "").strip()]
     recognized: List[Dict[str, Any]] = []
-    for observation in json.loads(process.stdout or "[]"):
+    for observation in observations:
         text = str(observation.get("text", "")).strip()
         bbox = observation.get("bbox", [])
         if not text or len(bbox) != 4:
@@ -1135,7 +1180,7 @@ def ocr_pdf(req: OcrRequest):
     if len(page_nums) > 12:
         document.close()
         raise HTTPException(status_code=413, detail="Esegui l’OCR su un massimo di 12 pagine per volta")
-    temp_dir = Path(tempfile.mkdtemp(prefix="mac-pdf-ocr-", dir=SESSION_DIRECTORY))
+    temp_dir = Path(tempfile.mkdtemp(prefix="pdf-editor-ocr-", dir=SESSION_DIRECTORY))
     try:
         for page_num in page_nums:
             page = document[page_num]
@@ -1144,16 +1189,12 @@ def ocr_pdf(req: OcrRequest):
                 continue
             image_path = temp_dir / f"page-{page_num + 1}.png"
             bounded_pixmap(page).save(image_path)
-            process = subprocess.run(
-                [str(helper), str(image_path), "it-IT,en-US"],
-                capture_output=True,
-                text=True,
-                timeout=20,
-                check=False,
-            )
-            if process.returncode != 0:
-                raise HTTPException(status_code=422, detail=process.stderr.strip() or "OCR non riuscito")
-            observations = json.loads(process.stdout or "[]")
+            try:
+                observations = run_ocr_helper(helper, image_path)
+            except subprocess.TimeoutExpired as error:
+                raise HTTPException(status_code=408, detail="OCR scaduto su una pagina") from error
+            except (OSError, RuntimeError) as error:
+                raise HTTPException(status_code=422, detail=str(error)) from error
             for observation in observations:
                 text = str(observation.get("text", "")).strip()
                 bbox = observation.get("bbox", [])

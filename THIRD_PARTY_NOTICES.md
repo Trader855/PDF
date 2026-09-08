@@ -37,6 +37,13 @@ The local OCR helper calls Apple Vision APIs available on macOS. Apple and
 macOS are trademarks of Apple Inc. No Apple code is redistributed by this
 repository.
 
+## Windows OCR helper
+
+On Windows the local OCR helper calls the `Windows.Media.Ocr` APIs supplied by
+Microsoft with the operating system. No Microsoft binary or language model is
+redistributed by this repository. Microsoft and Windows are trademarks of
+Microsoft Corporation.
+
 ## Source availability
 
 The application source is licensed under GNU Affero General Public License
