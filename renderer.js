@@ -686,6 +686,74 @@ function selectSpan(span, box) {
   updateCoherentButtonState();
 }
 
+function makeTextBoxDirectlyInteractive(box, span) {
+  box.addEventListener("pointerdown", (startEvent) => {
+    if (startEvent.button !== 0 || state.applyingEdit) return;
+    startEvent.preventDefault();
+    startEvent.stopPropagation();
+    selectSpan(span, box);
+
+    if (span.source === "ocr" || !Array.isArray(span.origin) || !state.inlineEditor) return;
+    const editor = state.inlineEditor;
+    const wrapper = editor.wrapper;
+    const initialLeft = Number.parseFloat(wrapper.style.left) || 0;
+    const initialTop = Number.parseFloat(wrapper.style.top) || 0;
+    const startX = startEvent.clientX;
+    const startY = startEvent.clientY;
+    let moved = false;
+    box.setPointerCapture(startEvent.pointerId);
+
+    const move = (event) => {
+      if (state.inlineEditor !== editor) return;
+      const deltaX = event.clientX - startX;
+      const deltaY = event.clientY - startY;
+      if (!moved && Math.hypot(deltaX, deltaY) < 3) return;
+      moved = true;
+      const maxLeft = Math.max(0, ui.canvas.clientWidth - 20);
+      const maxTop = Math.max(0, ui.canvas.clientHeight - 4);
+      const left = Math.min(maxLeft, Math.max(0, initialLeft + deltaX));
+      const top = Math.min(maxTop, Math.max(0, initialTop + deltaY));
+      wrapper.style.left = `${left}px`;
+      wrapper.style.top = `${top}px`;
+      wrapper.classList.add("is-dragging");
+      box.classList.add("is-dragging");
+      updateDraftOrigin(left, top);
+      ui.selectionHelp.textContent = "Rilascia il testo per salvare la nuova posizione.";
+    };
+
+    const stop = () => {
+      box.removeEventListener("pointermove", move);
+      box.removeEventListener("pointerup", stop);
+      box.removeEventListener("pointercancel", cancel);
+      if (box.hasPointerCapture(startEvent.pointerId)) box.releasePointerCapture(startEvent.pointerId);
+      wrapper.classList.remove("is-dragging");
+      box.classList.remove("is-dragging");
+      if (!moved || state.inlineEditor !== editor) return;
+      applySelectedEdit({ movementOnly: true }).catch((error) => {
+        console.error(error);
+        setStatus(`Spostamento non riuscito: ${error.message}`, true);
+      });
+    };
+
+    const cancel = () => {
+      wrapper.style.left = `${initialLeft}px`;
+      wrapper.style.top = `${initialTop}px`;
+      state.pendingEditOrigin = Array.isArray(span.origin) ? [...span.origin] : null;
+      moved = false;
+      stop();
+    };
+
+    box.addEventListener("pointermove", move);
+    box.addEventListener("pointerup", stop);
+    box.addEventListener("pointercancel", cancel);
+  });
+
+  box.addEventListener("click", (event) => {
+    event.stopPropagation();
+    if (event.detail === 0) selectSpan(span, box);
+  });
+}
+
 async function inspectCurrentPage() {
   if (!activePdfPath()) {
     throw new Error("hai aperto index.html nel browser. Avvia Tomorrow Now PDF Editor per modificare e salvare il PDF");
@@ -721,11 +789,10 @@ function createTextOverlay(spans, viewport) {
     box.style.height = `${Math.max(2, bottom - top)}px`;
     box.dataset.spanIndex = String(index);
     box.title = span.text || "";
-    box.setAttribute("aria-label", span.text ? `Modifica testo: ${span.text}` : "Modifica testo");
-    box.addEventListener("click", (event) => {
-      event.stopPropagation();
-      selectSpan(span, box);
-    });
+    box.setAttribute("aria-label", span.text
+      ? `Modifica o sposta testo: ${span.text}`
+      : "Modifica o sposta testo");
+    makeTextBoxDirectlyInteractive(box, span);
     fragment.appendChild(box);
   });
 
@@ -838,11 +905,10 @@ async function renderPage(pageNumber) {
   if (renderVersion !== state.renderVersion) return;
 
   state.currentSpans = spans;
+  createTextOverlay(spans, viewport);
   if (state.activeTool === "add") {
-    ui.overlay.replaceChildren();
-    setStatus("Clicca nel punto della pagina in cui vuoi aggiungere il nuovo testo.");
+    setStatus("Clicca uno spazio vuoto per scrivere. Clicca o trascina un testo per modificarlo o spostarlo.");
   } else {
-    createTextOverlay(spans, viewport);
     const ocrCount = spans.filter((span) => span.source === "ocr").length;
     setStatus(state.activeTool === "edit"
       ? (spans.length
@@ -1209,7 +1275,7 @@ async function unlockCurrentPdf(password = "") {
   setStatus("PDF sbloccato. Stai lavorando su una copia; ora puoi modificarla e salvarla.");
 }
 
-async function applySelectedEdit() {
+async function applySelectedEdit({ movementOnly = false } = {}) {
   const span = state.selectedSpan;
   if (!span || state.applyingEdit) return;
   if (!Array.isArray(state.pendingEditOrigin)) {
@@ -1247,7 +1313,9 @@ async function applySelectedEdit() {
     const editedPage = state.pageNumber;
     await reloadWorkingCopy(editedPage);
     ui.saveButton.disabled = false;
-    setStatus(`${span.source === "ocr" ? "Testo nell'immagine" : "Modifica"} applicato con ${result.font_used}. Ora puoi salvare la nuova versione.`);
+    setStatus(movementOnly
+      ? `Testo spostato e salvato con ${result.font_used}.`
+      : `${span.source === "ocr" ? "Testo nell'immagine" : "Modifica"} applicato con ${result.font_used}. Ora puoi salvare la nuova versione.`);
   } finally {
     state.applyingEdit = false;
     if (state.selectedSpan) setEditorEnabled(true);
@@ -1461,12 +1529,14 @@ function makeInlineEditorDraggable(wrapper, handle) {
     const initialTop = Number.parseFloat(wrapper.style.top) || 0;
     const startX = startEvent.clientX;
     const startY = startEvent.clientY;
+    let moved = false;
 
     const move = (event) => {
       const maxLeft = Math.max(0, ui.canvas.clientWidth - 20);
       const maxTop = Math.max(0, ui.canvas.clientHeight - 4);
       const left = Math.min(maxLeft, Math.max(0, initialLeft + event.clientX - startX));
       const top = Math.min(maxTop, Math.max(0, initialTop + event.clientY - startY));
+      moved = true;
       wrapper.style.left = `${left}px`;
       wrapper.style.top = `${top}px`;
       updateDraftOrigin(left, top);
@@ -1477,6 +1547,12 @@ function makeInlineEditorDraggable(wrapper, handle) {
       handle.removeEventListener("pointermove", move);
       handle.removeEventListener("pointerup", stop);
       handle.removeEventListener("pointercancel", stop);
+      if (moved && state.inlineEditor?.wrapper === wrapper && state.inlineEditor.kind === "edit") {
+        applySelectedEdit({ movementOnly: true }).catch((error) => {
+          console.error(error);
+          setStatus(`Spostamento non riuscito: ${error.message}`, true);
+        });
+      }
     };
 
     handle.addEventListener("pointermove", move);

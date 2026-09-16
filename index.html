@@ -771,7 +771,7 @@
       min-height: 2px;
       margin: 0;
       padding: 0;
-      cursor: text;
+      cursor: move;
       border: 1px solid transparent;
       border-radius: 3px;
       outline: none;
@@ -779,6 +779,7 @@
       color: transparent;
       opacity: 0;
       pointer-events: auto;
+      touch-action: none;
     }
 
     .text-box:hover,
@@ -787,6 +788,13 @@
       border-color: var(--accent);
       background: rgb(59 111 245 / 13%);
       box-shadow: 0 0 0 1px rgb(255 255 255 / 60%) inset;
+      opacity: 1;
+    }
+
+    .text-box.is-dragging {
+      cursor: grabbing;
+      border-color: #f5a623;
+      background: rgb(245 166 35 / 18%);
       opacity: 1;
     }
 

@@ -190,6 +190,46 @@ class FontCoverageTests(BackendRegressionCase):
 
 
 class TextEditingTests(BackendRegressionCase):
+    def test_generated_output_name_stays_bounded_across_many_edits(self) -> None:
+        current = Path("documento-con-un-nome-molto-lungo-" * 8 + ".pdf")
+        for _ in range(30):
+            current = main.temporary_output_path(current)
+        self.assertLess(len(current.name), 180)
+        self.assertEqual(current.name.count("-modificato-"), 1)
+
+    def test_added_text_can_move_without_erasing_vector_graphics(self) -> None:
+        source = self.output("move-text-source.pdf")
+        document = fitz.open()
+        page = document.new_page(width=300, height=300)
+        page.draw_line((30, 96), (270, 96), color=(0, 0, 0), width=1)
+        document.save(source)
+        document.close()
+
+        added = self.output("move-text-added.pdf")
+        main.add_text(main.AddTextRequest(
+            file_path=str(source), output_path=str(added), page_num=0,
+            origin=(50, 100), new_text="TESTO MOBILE 6", font="Helvetica", size=12,
+        ))
+        inspected = main.inspect_text(main.InspectRequest(file_path=str(added), page_num=0))
+        span = next(item for item in inspected["spans"] if item["text"] == "TESTO MOBILE 6")
+
+        moved = self.output("move-text-result.pdf")
+        main.edit_text(main.EditTextRequest(
+            file_path=str(added), output_path=str(moved), page_num=0,
+            bbox=span["bbox"], origin=(150, 160), new_text=span["text"],
+            font=span["font"], font_resource=span["font_resource"],
+            size=span["size"], color=span["color"],
+        ))
+
+        with fitz.open(moved) as result:
+            moved_span = next(
+                item for item in main.native_text_spans(result[0])
+                if item["text"] == "TESTO MOBILE 6"
+            )
+            self.assertAlmostEqual(moved_span["origin"][0], 150, delta=1)
+            self.assertAlmostEqual(moved_span["origin"][1], 160, delta=1)
+            self.assertGreaterEqual(len(result[0].get_drawings()), 1)
+
     def test_added_text_stays_upright_on_every_page_rotation(self) -> None:
         for rotation in (0, 90, 180, 270):
             with self.subTest(rotation=rotation):

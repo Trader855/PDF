@@ -554,7 +554,14 @@ def upright_text_rotation(page: fitz.Page) -> int:
 
 
 def temporary_output_path(source: Path) -> Path:
-    safe_stem = re.sub(r"[^a-zA-Z0-9._-]+", "-", source.stem).strip("-") or "documento"
+    original_stem = re.sub(
+        r"(?:-modificato-[0-9a-f]{32})+$",
+        "",
+        source.stem,
+        flags=re.IGNORECASE,
+    )
+    safe_stem = re.sub(r"[^a-zA-Z0-9._-]+", "-", original_stem).strip("-") or "documento"
+    safe_stem = safe_stem[:96].rstrip("-._") or "documento"
     directory = SESSION_DIRECTORY or Path(tempfile.gettempdir())
     return directory / f"{safe_stem}-modificato-{uuid.uuid4().hex}.pdf"
 
