@@ -144,3 +144,14 @@ test('Windows beta keeps its updater isolated from the Mac release channel', () 
   assert.match(main, /process\.platform === 'win32' \? 'unavailable'/);
   assert.match(desktopSecurity, /windowsHide: process\.platform === 'win32'/);
 });
+
+test('Release builds create clean output directories before compiling', () => {
+  const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+  assert.match(packageJson.scripts['prebuild:ocr'], /prepare:build-dirs/);
+  assert.match(packageJson.scripts['prebuild:backend'], /prepare:build-dirs/);
+  assert.match(packageJson.scripts['prebuild:backend:win'], /prepare:build-dirs/);
+  assert.match(
+    fs.readFileSync(path.join(root, 'scripts/prepare_build_dirs.cjs'), 'utf8'),
+    /\['dist', 'release'\]/,
+  );
+});
