@@ -649,8 +649,8 @@ function clearSelection() {
   ui.selectedText.value = "";
   ui.selectedFont.value = "";
   ui.selectedSize.value = "";
-  ui.selectionHelp.textContent = state.activeTool === "add"
-    ? "Clicca nella pagina nel punto in cui vuoi aggiungere il testo."
+  ui.selectionHelp.textContent = state.activeTool === "add" || state.activeTool === "edit"
+    ? "Clicca un testo per modificarlo oppure un punto vuoto per scrivere subito."
     : "Clicca su un testo nella pagina.";
   ui.applyButton.textContent = "Applica Modifica";
   state.coherentMatches = [];
@@ -844,9 +844,13 @@ async function renderPage(pageNumber) {
   } else {
     createTextOverlay(spans, viewport);
     const ocrCount = spans.filter((span) => span.source === "ocr").length;
-    setStatus(spans.length
-      ? `${spans.length} elementi modificabili rilevati${ocrCount ? `, inclusi ${ocrCount} dentro immagini` : ""}.`
-      : "Nessun testo modificabile in questa pagina.");
+    setStatus(state.activeTool === "edit"
+      ? (spans.length
+        ? `${spans.length} elementi rilevati${ocrCount ? `, inclusi ${ocrCount} dentro immagini` : ""}. Clicca un testo oppure scrivi in un punto vuoto.`
+        : "Clicca in un punto vuoto della pagina per scrivere subito.")
+      : (spans.length
+        ? `${spans.length} elementi modificabili rilevati${ocrCount ? `, inclusi ${ocrCount} dentro immagini` : ""}.`
+        : "Nessun testo modificabile in questa pagina."));
   }
 }
 
@@ -1066,7 +1070,7 @@ async function openPdf(filePath, file = null) {
   ui.fileName.title = filePath;
   ui.editButton.disabled = false;
   ui.editButton.classList.remove("is-active");
-  setToolButtonLabel(ui.editButton, "Modifica testo");
+  setToolButtonLabel(ui.editButton, "Modifica PDF");
   ui.addTextButton.disabled = false;
   ui.addTextButton.classList.remove("is-active");
   ui.signatureButton.classList.remove("is-active");
@@ -1530,6 +1534,20 @@ function createInlineTextEditor({ kind, origin, span, text }) {
       ui.applyButton.click();
     }
   });
+  content.addEventListener("blur", (event) => {
+    if (kind !== "add" || state.inlineEditor?.content !== content) return;
+    const destination = event.relatedTarget;
+    if (destination instanceof Element
+      && (wrapper.contains(destination) || destination.closest(".sidebar-right"))) return;
+    if (!content.textContent.trim()) {
+      clearSelection();
+      return;
+    }
+    applyTextAddition().catch((error) => {
+      console.error(error);
+      setStatus(`Aggiunta non riuscita: ${error.message}`, true);
+    });
+  });
 
   requestAnimationFrame(() => {
     content.focus();
@@ -1560,8 +1578,8 @@ function nearestTextStyle(point) {
 }
 
 function prepareTextAddition(event) {
-  if (state.activeTool !== "add" || !state.pdf) return;
-  if (event.target.closest(".inline-text-editor")) return;
+  if (!(["add", "edit"].includes(state.activeTool)) || !state.pdf || state.applyingEdit) return;
+  if (state.inlineEditor || event.target.closest(".text-box, .inline-text-editor")) return;
   event.preventDefault();
   event.stopPropagation();
 
@@ -1612,7 +1630,7 @@ async function applyTextAddition() {
   const addition = state.pendingAddition;
   if (!addition || state.applyingEdit) return;
   const newText = currentInlineText();
-  if (!newText) throw new Error("scrivi prima il testo da aggiungere");
+  if (!newText.trim()) throw new Error("scrivi prima il testo da aggiungere");
   const selectedFont = ui.selectedFont.value.trim() || addition.font || "Liberation Sans";
   const selectedResource = selectedFont === addition.font ? addition.font_resource : null;
 
@@ -1652,6 +1670,7 @@ function prepareMediaDraft(imageData, intrinsicWidth, intrinsicHeight, kind) {
   if (!state.pdf || !imageData) return;
   clearSelection();
   state.activeTool = kind;
+  ui.stage.classList.remove("is-adding-text");
   setInspectorMode("media");
   const aspectRatio = Math.max(0.1, Number(intrinsicWidth) / Math.max(1, Number(intrinsicHeight)));
   const width = Math.min(ui.canvas.clientWidth * 0.42, kind === "signature" ? 300 : 260);
@@ -2522,6 +2541,7 @@ ui.formsButton.addEventListener("click", () => {
   ui.toolsMenu.classList.add("hidden");
   state.editMode = true;
   state.activeTool = "form";
+  ui.stage.classList.remove("is-adding-text");
   ui.editButton.classList.remove("is-active");
   ui.addTextButton.classList.remove("is-active");
   ui.signatureButton.classList.remove("is-active");
@@ -2683,7 +2703,7 @@ ui.editButton.addEventListener("click", () => {
   setToolButtonLabel(ui.addTextButton, "Aggiungi testo");
   ui.signatureButton.classList.remove("is-active");
   ui.imageButton.classList.remove("is-active");
-  ui.stage.classList.remove("is-adding-text");
+  ui.stage.classList.add("is-adding-text");
   renderPage(state.pageNumber).catch((error) => {
     console.error(error);
     setStatus(`Modifica testo non disponibile: ${error.message}`, true);
@@ -2702,7 +2722,7 @@ ui.addTextButton.addEventListener("click", () => {
   ui.addTextButton.classList.add("is-active");
   setToolButtonLabel(ui.addTextButton, "Aggiunta attiva");
   ui.editButton.classList.remove("is-active");
-  setToolButtonLabel(ui.editButton, "Modifica testo");
+  setToolButtonLabel(ui.editButton, "Modifica PDF");
   ui.signatureButton.classList.remove("is-active");
   ui.imageButton.classList.remove("is-active");
   ui.stage.classList.add("is-adding-text");
@@ -2714,8 +2734,26 @@ ui.addTextButton.addEventListener("click", () => {
 
 ui.stage.addEventListener("click", prepareTextAddition, true);
 
+document.addEventListener("pointerdown", (event) => {
+  if (state.inlineEditor?.kind !== "add" || !state.pendingAddition || state.applyingEdit) return;
+  const target = event.target;
+  if (!(target instanceof Element)
+    || target.closest(".inline-text-editor, .sidebar-right")) return;
+
+  event.preventDefault();
+  event.stopPropagation();
+  if (!currentInlineText().trim()) {
+    clearSelection();
+    return;
+  }
+  applyTextAddition().catch((error) => {
+    console.error(error);
+    setStatus(`Aggiunta non riuscita: ${error.message}`, true);
+  });
+}, true);
+
 ui.applyButton.addEventListener("click", () => {
-  const action = state.activeTool === "add"
+  const action = state.inlineEditor?.kind === "add" || state.pendingAddition
     ? applyTextAddition()
     : (state.activeTool === "image" || state.activeTool === "signature")
       ? applyMediaDraft()
