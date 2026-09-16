@@ -548,6 +548,11 @@ def validate_document(file_path: str, page_num: int) -> Tuple[Path, fitz.Documen
     return path, document
 
 
+def upright_text_rotation(page: fitz.Page) -> int:
+    """Compensa /Rotate affinché il testo inserito sia leggibile nel viewer."""
+    return int(page.rotation) % 360
+
+
 def temporary_output_path(source: Path) -> Path:
     safe_stem = re.sub(r"[^a-zA-Z0-9._-]+", "-", source.stem).strip("-") or "documento"
     directory = SESSION_DIRECTORY or Path(tempfile.gettempdir())
@@ -1554,6 +1559,7 @@ def batch_edit_text(req: BatchEditTextRequest):
                             fontname=font_resource,
                             fontsize=change.size,
                             color=fitz.sRGB_to_pdf(change.color),
+                            rotate=upright_text_rotation(page),
                             overlay=True,
                         )
                         fonts_used.add(font_used)
@@ -1630,6 +1636,7 @@ def edit_text(req: EditTextRequest):
                     fontname=font_resource,
                     fontsize=req.size,
                     color=fitz.sRGB_to_pdf(req.color),
+                    rotate=upright_text_rotation(page),
                     overlay=True,
                 )
             except Exception as error:
@@ -1688,6 +1695,7 @@ def add_text(req: AddTextRequest):
                 fontname=font_resource,
                 fontsize=req.size,
                 color=fitz.sRGB_to_pdf(req.color),
+                rotate=upright_text_rotation(page),
                 overlay=True,
             )
         except Exception as error:

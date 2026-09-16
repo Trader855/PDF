@@ -1,4 +1,5 @@
 import base64
+import math
 import os
 import struct
 import tempfile
@@ -35,6 +36,20 @@ def create_basic_pdf(path: Path, pages: int = 2) -> None:
 def page_text(path: Path, page_num: int = 0) -> str:
     with fitz.open(path) as document:
         return document[page_num].get_text()
+
+
+def text_direction(path: Path, expected_text: str, page_num: int = 0) -> tuple[float, float]:
+    with fitz.open(path) as document:
+        for block in document[page_num].get_text("dict")["blocks"]:
+            for line in block.get("lines", []):
+                if expected_text in "".join(span.get("text", "") for span in line.get("spans", [])):
+                    return tuple(line["dir"])
+    raise AssertionError(f"Testo non trovato: {expected_text}")
+
+
+def expected_upright_direction(page_rotation: int) -> tuple[float, float]:
+    radians = math.radians(page_rotation)
+    return (round(math.cos(radians), 6), round(-math.sin(radians), 6))
 
 
 def solid_rgb_png(width: int = 20, height: int = 20) -> bytes:
@@ -175,6 +190,66 @@ class FontCoverageTests(BackendRegressionCase):
 
 
 class TextEditingTests(BackendRegressionCase):
+    def test_added_text_stays_upright_on_every_page_rotation(self) -> None:
+        for rotation in (0, 90, 180, 270):
+            with self.subTest(rotation=rotation):
+                source = self.output(f"rotated-{rotation}.pdf")
+                document = fitz.open()
+                page = document.new_page(width=300, height=300)
+                page.set_rotation(rotation)
+                document.save(source)
+                document.close()
+
+                output = self.output(f"rotated-{rotation}-with-text.pdf")
+                main.add_text(
+                    main.AddTextRequest(
+                        file_path=str(source),
+                        output_path=str(output),
+                        page_num=0,
+                        origin=(150, 150),
+                        new_text=f"ROTAZIONE {rotation}",
+                        font="Helvetica",
+                        size=12,
+                    )
+                )
+
+                direction = text_direction(output, f"ROTAZIONE {rotation}")
+                expected = expected_upright_direction(rotation)
+                self.assertAlmostEqual(direction[0], expected[0], places=5)
+                self.assertAlmostEqual(direction[1], expected[1], places=5)
+
+    def test_replaced_text_stays_upright_on_a_rotated_page(self) -> None:
+        source = self.output("rotated-edit.pdf")
+        document = fitz.open()
+        page = document.new_page(width=300, height=300)
+        page.set_rotation(180)
+        page.insert_text((220, 150), "TESTO ORIGINALE", fontname="helv", fontsize=12, rotate=180)
+        document.save(source)
+        document.close()
+
+        inspected = main.inspect_text(main.InspectRequest(file_path=str(source), page_num=0))
+        span = next(item for item in inspected["spans"] if item["text"] == "TESTO ORIGINALE")
+        output = self.output("rotated-edit-output.pdf")
+        main.edit_text(
+            main.EditTextRequest(
+                file_path=str(source),
+                output_path=str(output),
+                page_num=0,
+                bbox=span["bbox"],
+                origin=span["origin"],
+                new_text="TESTO MODIFICATO 6",
+                font=span["font"],
+                font_resource=span["font_resource"],
+                size=span["size"],
+                color=span["color"],
+            )
+        )
+
+        self.assertIn("TESTO MODIFICATO 6", page_text(output))
+        direction = text_direction(output, "TESTO MODIFICATO 6")
+        self.assertAlmostEqual(direction[0], -1.0, places=5)
+        self.assertAlmostEqual(direction[1], 0.0, places=5)
+
     def test_switch_to_bundled_font_survives_redaction_and_keeps_accents(self):
         span = self.date_span(self.source)
         output = self.output('changed-font.pdf')
