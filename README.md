@@ -19,13 +19,15 @@ Scarica sempre la versione più recente dalla pagina [Releases](https://github.c
 Accanto a ogni pacchetto è indicato il tag del relativo
 [codice sorgente](https://github.com/Trader855/PDF).
 
-## Funzioni principali della versione 1.7.1
+## Funzioni principali della versione 1.7.2
 
 - sblocco dei PDF protetti quando si conosce la password;
 - riordino, inserimento, rotazione, duplicazione, estrazione ed eliminazione delle pagine;
 - annulla e ripristina le modifiche;
 - aggiunta e modifica di testo e immagini, incluso il testo riconosciuto dentro immagini incorporate;
 - scrittura diretta nel PDF con un clic in uno spazio vuoto, stile ricavato dal testo vicino e applicazione automatica quando si clicca fuori;
+- selettore a freccia dedicato: il testo appena inserito resta selezionato, riconoscibile e trascinabile direttamente senza cambiare strumento;
+- zoom reale con pulsanti meno/più, percentuale modificabile, adattamento alla pagina e scorciatoie da tastiera;
 - orientamento corretto del testo aggiunto o sostituito anche nei PDF con pagine ruotate;
 - modifica coerente dello stesso valore in più punti del PDF, con scelta delle occorrenze e annullamento unico;
 - firme digitate o disegnate, con libreria locale di firme e timbri riutilizzabili;
@@ -108,7 +110,7 @@ terminano con esito positivo.
 
 ## Compatibilità
 
-La release pubblica 1.7.1 è compatibile con Mac Apple Silicon (M1, M2, M3, M4 e successivi).
+La release pubblica 1.7.2 è compatibile con Mac Apple Silicon (M1, M2, M3, M4 e successivi).
 Il supporto Windows 10/11 x64 è in fase di validazione: la pipeline crea un
 installer NSIS e un archivio ZIP **non firmati**, conservati come artefatti di
 test per 14 giorni e non pubblicati automaticamente nelle Releases.
