@@ -1,6 +1,8 @@
 import * as pdfjsLib from './node_modules/pdfjs-dist/build/pdf.mjs';
 import { createFilePaths } from './path-utils.mjs';
-const MAX_PDF_SCALE = 1.5;
+const FIT_MAX_PDF_SCALE = 1.5;
+const MIN_PDF_SCALE = 0.35;
+const MAX_PDF_SCALE = 2.5;
 const THUMBNAIL_WIDTH = 145;
 const TOMORROW_NOW_URL = "https://www.tomorrownow.tech";
 const appBridge = window.desktopAPI || null;
@@ -28,7 +30,10 @@ const ui = {
   previousButton: document.querySelector("#previous-page"),
   nextButton: document.querySelector("#next-page"),
   pageIndicator: document.querySelector("#page-indicator"),
-  zoomIndicator: document.querySelector("#zoom-indicator"),
+  zoomOutButton: document.querySelector("#zoom-out"),
+  zoomInput: document.querySelector("#zoom-input"),
+  zoomInButton: document.querySelector("#zoom-in"),
+  zoomFitButton: document.querySelector("#zoom-fit"),
   pageCount: document.querySelector("#page-count"),
   thumbnailsTitle: document.querySelector("#thumbnails-title"),
   thumbnails: document.querySelector("#thumbnails"),
@@ -47,6 +52,7 @@ const ui = {
   duplicatePageButton: document.querySelector("#duplicate-page"),
   extractPageButton: document.querySelector("#extract-page"),
   deletePageButton: document.querySelector("#delete-page"),
+  selectObjectButton: document.querySelector("#select-object-mode"),
   editButton: document.querySelector("#edit-mode"),
   addTextButton: document.querySelector("#add-text-mode"),
   insertPdfButton: document.querySelector("#insert-pdf"),
@@ -149,6 +155,8 @@ const state = {
   pendingEditOrigin: null,
   pendingAddition: null,
   inlineEditor: null,
+  selectedObjectId: null,
+  addedTextObjects: [],
   currentSpans: [],
   renderTask: null,
   renderVersion: 0,
@@ -160,7 +168,9 @@ const state = {
   applyingEdit: false,
   editMode: false,
   activeTool: null,
-  pageScale: MAX_PDF_SCALE,
+  pageScale: FIT_MAX_PDF_SCALE,
+  zoomMode: "fit",
+  zoomScale: 1,
   lockedPath: "",
   lockedName: "",
   encrypted: false,
@@ -564,6 +574,9 @@ function updateNavigation() {
   [ui.rotatePageButton, ui.duplicatePageButton, ui.extractPageButton, ui.deletePageButton].forEach((button) => {
     button.disabled = !totalPages;
   });
+  [ui.zoomOutButton, ui.zoomInput, ui.zoomInButton, ui.zoomFitButton].forEach((control) => {
+    control.disabled = !totalPages;
+  });
   if (ui.deletePageButton) ui.deletePageButton.disabled = totalPages <= 1;
 
   ui.thumbnails.querySelectorAll(".thumbnail-button").forEach((button) => {
@@ -571,9 +584,67 @@ function updateNavigation() {
   });
 }
 
+const ZOOM_STEPS = [35, 50, 67, 75, 85, 100, 110, 125, 150, 175, 200, 225, 250];
+
+function updateZoomControls() {
+  ui.zoomInput.value = String(Math.round(state.pageScale * 100));
+  ui.zoomFitButton.classList.toggle("is-active", state.zoomMode === "fit");
+}
+
+function setZoomPercent(percent) {
+  if (!state.pdf) return;
+  const numericPercent = Number(percent);
+  if (!Number.isFinite(numericPercent)) {
+    updateZoomControls();
+    return;
+  }
+  const clamped = Math.min(MAX_PDF_SCALE * 100, Math.max(MIN_PDF_SCALE * 100, numericPercent));
+  if (state.zoomMode === "manual" && Math.abs(state.zoomScale - clamped / 100) < 0.001) {
+    updateZoomControls();
+    return;
+  }
+  state.zoomMode = "manual";
+  state.zoomScale = clamped / 100;
+  renderPage(state.pageNumber).catch((error) => setStatus(`Zoom non disponibile: ${error.message}`, true));
+}
+
+function stepZoom(direction) {
+  const currentPercent = Math.round(state.pageScale * 100);
+  const next = direction > 0
+    ? ZOOM_STEPS.find((value) => value > currentPercent) ?? ZOOM_STEPS.at(-1)
+    : [...ZOOM_STEPS].reverse().find((value) => value < currentPercent) ?? ZOOM_STEPS[0];
+  setZoomPercent(next);
+}
+
 function setToolButtonLabel(button, label) {
   const labelElement = button.querySelector("span");
   if (labelElement) labelElement.textContent = label;
+}
+
+function activateTextTool(tool) {
+  state.editMode = true;
+  state.activeTool = tool;
+  ui.selectObjectButton.classList.toggle("is-active", tool === "select");
+  ui.editButton.classList.toggle("is-active", tool === "edit");
+  ui.addTextButton.classList.toggle("is-active", tool === "add");
+  setToolButtonLabel(ui.selectObjectButton, tool === "select" ? "Selezione attiva" : "Seleziona");
+  setToolButtonLabel(ui.editButton, tool === "edit" ? "Modifica attiva" : "Modifica PDF");
+  setToolButtonLabel(ui.addTextButton, tool === "add" ? "Aggiunta attiva" : "Aggiungi testo");
+  ui.signatureButton.classList.remove("is-active");
+  ui.imageButton.classList.remove("is-active");
+  ui.annotationButton.classList.remove("is-active");
+  ui.stage.classList.toggle("is-adding-text", tool === "edit" || tool === "add");
+  ui.stage.classList.toggle("is-selecting-objects", tool === "select");
+}
+
+function deactivateTextTools() {
+  ui.selectObjectButton.classList.remove("is-active");
+  ui.editButton.classList.remove("is-active");
+  ui.addTextButton.classList.remove("is-active");
+  setToolButtonLabel(ui.selectObjectButton, "Seleziona");
+  setToolButtonLabel(ui.editButton, "Modifica PDF");
+  setToolButtonLabel(ui.addTextButton, "Aggiungi testo");
+  ui.stage.classList.remove("is-adding-text", "is-selecting-objects");
 }
 
 function normalizedEditorText(value) {
@@ -630,6 +701,7 @@ function clearMediaDraft() {
 
 function clearSelection() {
   state.selectedSpan = null;
+  state.selectedObjectId = null;
   state.pendingEditOrigin = null;
   state.pendingAddition = null;
   if (state.inlineEditor?.wrapper) state.inlineEditor.wrapper.remove();
@@ -649,9 +721,11 @@ function clearSelection() {
   ui.selectedText.value = "";
   ui.selectedFont.value = "";
   ui.selectedSize.value = "";
-  ui.selectionHelp.textContent = state.activeTool === "add" || state.activeTool === "edit"
-    ? "Clicca un testo per modificarlo oppure un punto vuoto per scrivere subito."
-    : "Clicca su un testo nella pagina.";
+  ui.selectionHelp.textContent = state.activeTool === "select"
+    ? "Gli oggetti aggiunti in questa sessione sono evidenziati in arancione: clicca o trascina per spostarli."
+    : state.activeTool === "add" || state.activeTool === "edit"
+      ? "Clicca un testo per modificarlo oppure un punto vuoto per scrivere subito."
+      : "Clicca su un testo nella pagina.";
   ui.applyButton.textContent = "Applica Modifica";
   state.coherentMatches = [];
   state.coherentOriginalText = "";
@@ -660,13 +734,14 @@ function clearSelection() {
   setEditorEnabled(false);
 }
 
-function selectSpan(span, box) {
+function selectSpan(span, box, objectId = box?.dataset.objectId || null) {
   ui.overlay.querySelectorAll(".is-selected").forEach((item) => {
     item.classList.remove("is-selected");
   });
   box.classList.add("is-selected");
 
   state.selectedSpan = span;
+  state.selectedObjectId = objectId || null;
   state.pendingEditOrigin = Array.isArray(span.origin) ? [...span.origin] : null;
   state.pendingAddition = null;
   ui.selectedText.value = span.text || "";
@@ -686,12 +761,12 @@ function selectSpan(span, box) {
   updateCoherentButtonState();
 }
 
-function makeTextBoxDirectlyInteractive(box, span) {
+function makeTextBoxDirectlyInteractive(box, span, objectId = null) {
   box.addEventListener("pointerdown", (startEvent) => {
     if (startEvent.button !== 0 || state.applyingEdit) return;
     startEvent.preventDefault();
     startEvent.stopPropagation();
-    selectSpan(span, box);
+    selectSpan(span, box, objectId);
 
     if (span.source === "ocr" || !Array.isArray(span.origin) || !state.inlineEditor) return;
     const editor = state.inlineEditor;
@@ -754,7 +829,7 @@ function makeTextBoxDirectlyInteractive(box, span) {
 
   box.addEventListener("click", (event) => {
     event.stopPropagation();
-    if (event.detail === 0) selectSpan(span, box);
+    if (event.detail === 0) selectSpan(span, box, objectId);
   });
 }
 
@@ -775,8 +850,49 @@ async function inspectCurrentPage() {
   return Array.isArray(result.spans) ? result.spans : [];
 }
 
+function trackedTextObjectForSpan(span, claimedObjectIds) {
+  if (!Array.isArray(span.origin) || !span.text) return null;
+  const spanText = normalizedEditorText(span.text);
+  const candidates = state.addedTextObjects
+    .filter((item) => item.pageNumber === state.pageNumber
+      && !claimedObjectIds.has(item.id)
+      && normalizedEditorText(item.text) === spanText)
+    .map((item) => ({
+      item,
+      distance: Math.hypot(
+        Number(item.origin?.[0]) - Number(span.origin[0]),
+        Number(item.origin?.[1]) - Number(span.origin[1]),
+      ),
+    }))
+    .sort((left, right) => left.distance - right.distance);
+  const nearest = candidates[0];
+  if (!nearest) return null;
+  const tolerance = Math.max(12, Number(span.size || nearest.item.size || 11) * 2.5);
+  return nearest.distance <= tolerance ? nearest.item : null;
+}
+
+function selectTrackedTextObject(objectId) {
+  const box = ui.overlay.querySelector(`.text-box[data-object-id="${CSS.escape(objectId)}"]`);
+  if (!box) return false;
+  const span = state.currentSpans[Number(box.dataset.spanIndex)];
+  if (!span) return false;
+  selectSpan(span, box, objectId);
+  return true;
+}
+
+function objectSelectionStatus(objectCount) {
+  if (objectCount === 1) {
+    return "1 oggetto aggiunto evidenziato in arancione. Clicca o trascina per spostarlo.";
+  }
+  if (objectCount > 1) {
+    return `${objectCount} oggetti aggiunti evidenziati in arancione. Clicca o trascina per spostarli.`;
+  }
+  return "Nessun oggetto aggiunto riconosciuto in questa sessione. Puoi comunque cliccare un testo esistente.";
+}
+
 function createTextOverlay(spans, viewport) {
   const fragment = document.createDocumentFragment();
+  const claimedObjectIds = new Set();
 
   spans.forEach((span, index) => {
     if (!Array.isArray(span.bbox) || span.bbox.length < 4) return;
@@ -792,11 +908,17 @@ function createTextOverlay(spans, viewport) {
     box.style.width = `${Math.max(2, right - left)}px`;
     box.style.height = `${Math.max(2, bottom - top)}px`;
     box.dataset.spanIndex = String(index);
+    const trackedObject = trackedTextObjectForSpan(span, claimedObjectIds);
+    if (trackedObject) {
+      claimedObjectIds.add(trackedObject.id);
+      box.dataset.objectId = trackedObject.id;
+      box.classList.add("is-added-object");
+    }
     box.title = span.text || "";
     box.setAttribute("aria-label", span.text
       ? `Modifica o sposta testo: ${span.text}`
       : "Modifica o sposta testo");
-    makeTextBoxDirectlyInteractive(box, span);
+    makeTextBoxDirectlyInteractive(box, span, trackedObject?.id || null);
     fragment.appendChild(box);
   });
 
@@ -826,13 +948,17 @@ async function renderPage(pageNumber) {
   const baseViewport = page.getViewport({ scale: 1 });
   const availableWidth = Math.max(320, ui.workspace.clientWidth - 72);
   const deviceScale = Math.min(2, Math.max(1, window.devicePixelRatio || 1));
-  state.pageScale = Math.min(MAX_PDF_SCALE, availableWidth / baseViewport.width,
+  const safeScale = Math.min(MAX_PDF_SCALE,
     Math.sqrt(12_000_000 / (baseViewport.width * baseViewport.height)) / deviceScale,
     16000 / Math.max(baseViewport.width, baseViewport.height) / deviceScale);
+  const requestedScale = state.zoomMode === "manual"
+    ? state.zoomScale
+    : Math.min(FIT_MAX_PDF_SCALE, availableWidth / baseViewport.width);
+  state.pageScale = Math.max(MIN_PDF_SCALE, Math.min(safeScale, requestedScale));
   const viewport = page.getViewport({ scale: state.pageScale });
   state.currentViewport = viewport;
   state.pdfPageHeight = Math.abs(Number(page.view?.[3]) - Number(page.view?.[1])) || baseViewport.height;
-  ui.zoomIndicator.textContent = `${Math.round(state.pageScale * 100)}%`;
+  updateZoomControls();
   const outputScale = deviceScale;
   const context = ui.canvas.getContext("2d", { alpha: false });
 
@@ -910,7 +1036,10 @@ async function renderPage(pageNumber) {
 
   state.currentSpans = spans;
   createTextOverlay(spans, viewport);
-  if (state.activeTool === "add") {
+  if (state.activeTool === "select") {
+    const objectCount = ui.overlay.querySelectorAll(".text-box.is-added-object").length;
+    setStatus(objectSelectionStatus(objectCount));
+  } else if (state.activeTool === "add") {
     setStatus("Clicca uno spazio vuoto per scrivere. Clicca o trascina un testo per modificarlo o spostarlo.");
   } else {
     const ocrCount = spans.filter((span) => span.source === "ocr").length;
@@ -1093,6 +1222,7 @@ async function openPdf(filePath, file = null) {
     ui.fileName.textContent = state.originalName;
     ui.fileName.title = filePath;
     ui.unlockButton.disabled = false;
+    ui.selectObjectButton.disabled = true;
     ui.editButton.disabled = true;
     ui.addTextButton.disabled = true;
     ui.insertPdfButton.disabled = true;
@@ -1128,7 +1258,11 @@ async function openPdf(filePath, file = null) {
   state.pageNumber = 1;
   state.editMode = false;
   state.activeTool = null;
+  state.selectedObjectId = null;
+  state.addedTextObjects = [];
   state.currentSpans = [];
+  state.zoomMode = "fit";
+  state.zoomScale = 1;
   state.undoStack = [];
   state.redoStack = [];
   state.lockedPath = "";
@@ -1138,11 +1272,12 @@ async function openPdf(filePath, file = null) {
 
   ui.fileName.textContent = state.originalName;
   ui.fileName.title = filePath;
+  ui.selectObjectButton.disabled = false;
+  ui.selectObjectButton.classList.remove("is-active");
+  setToolButtonLabel(ui.selectObjectButton, "Seleziona");
   ui.editButton.disabled = false;
-  ui.editButton.classList.remove("is-active");
-  setToolButtonLabel(ui.editButton, "Modifica PDF");
+  deactivateTextTools();
   ui.addTextButton.disabled = false;
-  ui.addTextButton.classList.remove("is-active");
   ui.signatureButton.classList.remove("is-active");
   ui.imageButton.classList.remove("is-active");
   ui.annotationButton.classList.remove("is-active");
@@ -1281,6 +1416,7 @@ async function unlockCurrentPdf(password = "") {
 
 async function applySelectedEdit({ movementOnly = false } = {}) {
   const span = state.selectedSpan;
+  const objectId = state.selectedObjectId;
   if (!span || state.applyingEdit) return;
   if (!Array.isArray(state.pendingEditOrigin)) {
     throw new Error("la posizione originale di questo testo non è disponibile");
@@ -1288,6 +1424,8 @@ async function applySelectedEdit({ movementOnly = false } = {}) {
 
   const selectedFont = ui.selectedFont.value.trim() || span.font || "Liberation Sans";
   const selectedResource = selectedFont === span.font ? span.font_resource : null;
+  const newText = currentInlineText();
+  const newSize = Number(ui.selectedSize.value) || Number(span.size);
 
   state.applyingEdit = true;
   setEditorEnabled(true);
@@ -1303,10 +1441,10 @@ async function applySelectedEdit({ movementOnly = false } = {}) {
         page_num: state.pageNumber - 1,
         bbox: span.bbox,
         origin: state.pendingEditOrigin,
-        new_text: currentInlineText(),
+        new_text: newText,
         font: selectedFont,
         font_resource: selectedResource,
-        size: Number(ui.selectedSize.value) || Number(span.size),
+        size: newSize,
         color: Number(span.color) || 0,
         source: span.source || "native",
         background_color: Number(span.background_color) || 0xFFFFFF,
@@ -1315,7 +1453,23 @@ async function applySelectedEdit({ movementOnly = false } = {}) {
 
     commitMutation(result.output_path);
     const editedPage = state.pageNumber;
+    if (objectId) {
+      const objectIndex = state.addedTextObjects.findIndex((item) => item.id === objectId);
+      if (objectIndex >= 0) {
+        if (!newText.trim()) {
+          state.addedTextObjects.splice(objectIndex, 1);
+        } else {
+          Object.assign(state.addedTextObjects[objectIndex], {
+            text: newText,
+            origin: [...state.pendingEditOrigin],
+            font: result.font_used || selectedFont,
+            size: newSize,
+          });
+        }
+      }
+    }
     await reloadWorkingCopy(editedPage);
+    if (objectId && newText.trim()) selectTrackedTextObject(objectId);
     ui.saveButton.disabled = false;
     setStatus(movementOnly
       ? `Testo spostato e salvato con ${result.font_used}.`
@@ -1740,9 +1894,21 @@ async function applyTextAddition() {
 
     commitMutation(result.output_path);
     const editedPage = state.pageNumber;
+    const objectId = crypto.randomUUID();
+    state.addedTextObjects.push({
+      id: objectId,
+      pageNumber: editedPage,
+      text: newText,
+      origin: [...addition.origin],
+      font: result.font_used || selectedFont,
+      size: Number(ui.selectedSize.value) || addition.size,
+      color: addition.color,
+    });
+    activateTextTool("select");
     await reloadWorkingCopy(editedPage);
+    selectTrackedTextObject(objectId);
     ui.saveButton.disabled = false;
-    setStatus(`Testo aggiunto con ${result.font_used}. Ora puoi salvarlo o aggiungerne un altro.`);
+    setStatus(`Testo aggiunto con ${result.font_used} e lasciato selezionato. Trascinalo oppure continua a modificarlo.`);
   } finally {
     state.applyingEdit = false;
     if (state.pendingAddition) setEditorEnabled(true);
@@ -1753,7 +1919,7 @@ function prepareMediaDraft(imageData, intrinsicWidth, intrinsicHeight, kind) {
   if (!state.pdf || !imageData) return;
   clearSelection();
   state.activeTool = kind;
-  ui.stage.classList.remove("is-adding-text");
+  deactivateTextTools();
   setInspectorMode("media");
   const aspectRatio = Math.max(0.1, Number(intrinsicWidth) / Math.max(1, Number(intrinsicHeight)));
   const width = Math.min(ui.canvas.clientWidth * 0.42, kind === "signature" ? 300 : 260);
@@ -2502,8 +2668,7 @@ ui.annotationButton.addEventListener("click", () => {
   if (!state.pdf) return;
   state.editMode = true;
   state.activeTool = "annotation";
-  ui.editButton.classList.remove("is-active");
-  ui.addTextButton.classList.remove("is-active");
+  deactivateTextTools();
   ui.signatureButton.classList.remove("is-active");
   ui.imageButton.classList.remove("is-active");
   ui.annotationButton.classList.remove("is-active");
@@ -2624,9 +2789,7 @@ ui.formsButton.addEventListener("click", () => {
   ui.toolsMenu.classList.add("hidden");
   state.editMode = true;
   state.activeTool = "form";
-  ui.stage.classList.remove("is-adding-text");
-  ui.editButton.classList.remove("is-active");
-  ui.addTextButton.classList.remove("is-active");
+  deactivateTextTools();
   ui.signatureButton.classList.remove("is-active");
   ui.imageButton.classList.remove("is-active");
   ui.annotationButton.classList.remove("is-active");
@@ -2771,65 +2934,54 @@ ui.nextButton.addEventListener("click", () => {
   }
 });
 
-ui.editButton.addEventListener("click", () => {
+ui.zoomOutButton.addEventListener("click", () => stepZoom(-1));
+ui.zoomInButton.addEventListener("click", () => stepZoom(1));
+ui.zoomFitButton.addEventListener("click", () => {
+  if (!state.pdf) return;
+  state.zoomMode = "fit";
+  renderPage(state.pageNumber).catch((error) => setStatus(`Zoom non disponibile: ${error.message}`, true));
+});
+ui.zoomInput.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  setZoomPercent(ui.zoomInput.value);
+  ui.zoomInput.blur();
+});
+ui.zoomInput.addEventListener("blur", () => setZoomPercent(ui.zoomInput.value));
+
+function switchToTextTool(tool) {
   if (!state.pdf) return;
   if (!activePdfPath()) {
-    setStatus("Questa è la versione aperta nel browser. Chiudila e avvia Tomorrow Now PDF Editor.", true);
+    setStatus("Questa è la versione aperta nel browser. Avvia Tomorrow Now PDF Editor per modificare e salvare il PDF.", true);
     return;
   }
 
-  const wasUsingTextTool = state.activeTool === "edit" || state.activeTool === "add";
-  state.editMode = true;
-  state.activeTool = "edit";
-  ui.editButton.classList.add("is-active");
-  setToolButtonLabel(ui.editButton, "Modifica attiva");
-  ui.addTextButton.classList.remove("is-active");
-  setToolButtonLabel(ui.addTextButton, "Aggiungi testo");
-  ui.signatureButton.classList.remove("is-active");
-  ui.imageButton.classList.remove("is-active");
-  ui.stage.classList.add("is-adding-text");
+  const wasUsingTextTool = ["select", "edit", "add"].includes(state.activeTool);
+  activateTextTool(tool);
   if (wasUsingTextTool) {
     clearSelection();
     if (!state.renderTask) {
-      setStatus("Clicca un testo per modificarlo o trascinalo per spostarlo. Puoi anche scrivere in un punto vuoto.");
+      if (tool === "select") {
+        const objectCount = ui.overlay.querySelectorAll(".text-box.is-added-object").length;
+        setStatus(objectSelectionStatus(objectCount));
+      } else if (tool === "edit") {
+        setStatus("Clicca un testo per modificarlo o trascinalo per spostarlo. Puoi anche scrivere in un punto vuoto.");
+      } else {
+        setStatus("Clicca uno spazio vuoto per scrivere. Clicca o trascina un testo per modificarlo o spostarlo.");
+      }
     }
     return;
   }
   renderPage(state.pageNumber).catch((error) => {
     console.error(error);
-    setStatus(`Modifica testo non disponibile: ${error.message}`, true);
+    setStatus(`Strumento testo non disponibile: ${error.message}`, true);
   });
-});
+}
 
-ui.addTextButton.addEventListener("click", () => {
-  if (!state.pdf) return;
-  if (!activePdfPath()) {
-    setStatus("Questa è la versione aperta nel browser. Usa Tomorrow Now PDF Editor per aggiungere e salvare testo.", true);
-    return;
-  }
+ui.selectObjectButton.addEventListener("click", () => switchToTextTool("select"));
 
-  const wasUsingTextTool = state.activeTool === "edit" || state.activeTool === "add";
-  state.editMode = true;
-  state.activeTool = "add";
-  ui.addTextButton.classList.add("is-active");
-  setToolButtonLabel(ui.addTextButton, "Aggiunta attiva");
-  ui.editButton.classList.remove("is-active");
-  setToolButtonLabel(ui.editButton, "Modifica PDF");
-  ui.signatureButton.classList.remove("is-active");
-  ui.imageButton.classList.remove("is-active");
-  ui.stage.classList.add("is-adding-text");
-  if (wasUsingTextTool) {
-    clearSelection();
-    if (!state.renderTask) {
-      setStatus("Clicca uno spazio vuoto per scrivere. Clicca o trascina un testo per modificarlo o spostarlo.");
-    }
-    return;
-  }
-  renderPage(state.pageNumber).catch((error) => {
-    console.error(error);
-    setStatus(`Aggiunta testo non disponibile: ${error.message}`, true);
-  });
-});
+ui.editButton.addEventListener("click", () => switchToTextTool("edit"));
+ui.addTextButton.addEventListener("click", () => switchToTextTool("add"));
 
 ui.stage.addEventListener("click", prepareTextAddition, true);
 
@@ -2906,6 +3058,23 @@ ui.findCloseButton.addEventListener("click", () => resetDocumentSearch({ close: 
 
 window.addEventListener("keydown", (event) => {
   const hasCommandModifier = event.metaKey || event.ctrlKey;
+  if (hasCommandModifier && ["+", "="].includes(event.key)) {
+    event.preventDefault();
+    stepZoom(1);
+    return;
+  }
+  if (hasCommandModifier && event.key === "-") {
+    event.preventDefault();
+    stepZoom(-1);
+    return;
+  }
+  if (hasCommandModifier && event.key === "0") {
+    event.preventDefault();
+    if (!state.pdf) return;
+    state.zoomMode = "fit";
+    renderPage(state.pageNumber).catch((error) => setStatus(`Zoom non disponibile: ${error.message}`, true));
+    return;
+  }
   if (hasCommandModifier && event.key.toLowerCase() === "f") {
     event.preventDefault();
     openDocumentSearch();
