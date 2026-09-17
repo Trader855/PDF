@@ -700,10 +700,12 @@ function makeTextBoxDirectlyInteractive(box, span) {
     const initialTop = Number.parseFloat(wrapper.style.top) || 0;
     const startX = startEvent.clientX;
     const startY = startEvent.clientY;
+    const pointerId = startEvent.pointerId;
     let moved = false;
-    box.setPointerCapture(startEvent.pointerId);
+    box.setPointerCapture(pointerId);
 
     const move = (event) => {
+      if (event.pointerId !== pointerId) return;
       if (state.inlineEditor !== editor) return;
       const deltaX = event.clientX - startX;
       const deltaY = event.clientY - startY;
@@ -721,11 +723,12 @@ function makeTextBoxDirectlyInteractive(box, span) {
       ui.selectionHelp.textContent = "Rilascia il testo per salvare la nuova posizione.";
     };
 
-    const stop = () => {
-      box.removeEventListener("pointermove", move);
-      box.removeEventListener("pointerup", stop);
-      box.removeEventListener("pointercancel", cancel);
-      if (box.hasPointerCapture(startEvent.pointerId)) box.releasePointerCapture(startEvent.pointerId);
+    const stop = (event) => {
+      if (event?.pointerId !== undefined && event.pointerId !== pointerId) return;
+      window.removeEventListener("pointermove", move, true);
+      window.removeEventListener("pointerup", stop, true);
+      window.removeEventListener("pointercancel", cancel, true);
+      if (box.hasPointerCapture(pointerId)) box.releasePointerCapture(pointerId);
       wrapper.classList.remove("is-dragging");
       box.classList.remove("is-dragging");
       if (!moved || state.inlineEditor !== editor) return;
@@ -735,17 +738,18 @@ function makeTextBoxDirectlyInteractive(box, span) {
       });
     };
 
-    const cancel = () => {
+    const cancel = (event) => {
+      if (event?.pointerId !== undefined && event.pointerId !== pointerId) return;
       wrapper.style.left = `${initialLeft}px`;
       wrapper.style.top = `${initialTop}px`;
       state.pendingEditOrigin = Array.isArray(span.origin) ? [...span.origin] : null;
       moved = false;
-      stop();
+      stop(event);
     };
 
-    box.addEventListener("pointermove", move);
-    box.addEventListener("pointerup", stop);
-    box.addEventListener("pointercancel", cancel);
+    window.addEventListener("pointermove", move, true);
+    window.addEventListener("pointerup", stop, true);
+    window.addEventListener("pointercancel", cancel, true);
   });
 
   box.addEventListener("click", (event) => {
@@ -1529,9 +1533,11 @@ function makeInlineEditorDraggable(wrapper, handle) {
     const initialTop = Number.parseFloat(wrapper.style.top) || 0;
     const startX = startEvent.clientX;
     const startY = startEvent.clientY;
+    const pointerId = startEvent.pointerId;
     let moved = false;
 
     const move = (event) => {
+      if (event.pointerId !== pointerId) return;
       const maxLeft = Math.max(0, ui.canvas.clientWidth - 20);
       const maxTop = Math.max(0, ui.canvas.clientHeight - 4);
       const left = Math.min(maxLeft, Math.max(0, initialLeft + event.clientX - startX));
@@ -1543,10 +1549,11 @@ function makeInlineEditorDraggable(wrapper, handle) {
       ui.selectionHelp.textContent = "Posizione aggiornata. Scrivi direttamente sulla pagina e poi applica.";
     };
 
-    const stop = () => {
-      handle.removeEventListener("pointermove", move);
-      handle.removeEventListener("pointerup", stop);
-      handle.removeEventListener("pointercancel", stop);
+    const stop = (event) => {
+      if (event?.pointerId !== undefined && event.pointerId !== pointerId) return;
+      window.removeEventListener("pointermove", move, true);
+      window.removeEventListener("pointerup", stop, true);
+      window.removeEventListener("pointercancel", stop, true);
       if (moved && state.inlineEditor?.wrapper === wrapper && state.inlineEditor.kind === "edit") {
         applySelectedEdit({ movementOnly: true }).catch((error) => {
           console.error(error);
@@ -1555,9 +1562,9 @@ function makeInlineEditorDraggable(wrapper, handle) {
       }
     };
 
-    handle.addEventListener("pointermove", move);
-    handle.addEventListener("pointerup", stop);
-    handle.addEventListener("pointercancel", stop);
+    window.addEventListener("pointermove", move, true);
+    window.addEventListener("pointerup", stop, true);
+    window.addEventListener("pointercancel", stop, true);
   });
 }
 
@@ -2771,6 +2778,7 @@ ui.editButton.addEventListener("click", () => {
     return;
   }
 
+  const wasUsingTextTool = state.activeTool === "edit" || state.activeTool === "add";
   state.editMode = true;
   state.activeTool = "edit";
   ui.editButton.classList.add("is-active");
@@ -2780,6 +2788,13 @@ ui.editButton.addEventListener("click", () => {
   ui.signatureButton.classList.remove("is-active");
   ui.imageButton.classList.remove("is-active");
   ui.stage.classList.add("is-adding-text");
+  if (wasUsingTextTool) {
+    clearSelection();
+    if (!state.renderTask) {
+      setStatus("Clicca un testo per modificarlo o trascinalo per spostarlo. Puoi anche scrivere in un punto vuoto.");
+    }
+    return;
+  }
   renderPage(state.pageNumber).catch((error) => {
     console.error(error);
     setStatus(`Modifica testo non disponibile: ${error.message}`, true);
@@ -2793,6 +2808,7 @@ ui.addTextButton.addEventListener("click", () => {
     return;
   }
 
+  const wasUsingTextTool = state.activeTool === "edit" || state.activeTool === "add";
   state.editMode = true;
   state.activeTool = "add";
   ui.addTextButton.classList.add("is-active");
@@ -2802,6 +2818,13 @@ ui.addTextButton.addEventListener("click", () => {
   ui.signatureButton.classList.remove("is-active");
   ui.imageButton.classList.remove("is-active");
   ui.stage.classList.add("is-adding-text");
+  if (wasUsingTextTool) {
+    clearSelection();
+    if (!state.renderTask) {
+      setStatus("Clicca uno spazio vuoto per scrivere. Clicca o trascina un testo per modificarlo o spostarlo.");
+    }
+    return;
+  }
   renderPage(state.pageNumber).catch((error) => {
     console.error(error);
     setStatus(`Aggiunta testo non disponibile: ${error.message}`, true);
