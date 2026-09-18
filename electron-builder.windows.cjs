@@ -33,6 +33,8 @@ module.exports = {
     ext: 'pdf',
     name: 'TomorrowNowPDFDocument',
     description: 'Documento PDF',
+    mimeType: 'application/pdf',
+    role: 'Editor',
   }],
   win: {
     icon: 'build/icon_1024.png',

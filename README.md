@@ -19,7 +19,7 @@ Scarica sempre la versione più recente dalla pagina [Releases](https://github.c
 Accanto a ogni pacchetto è indicato il tag del relativo
 [codice sorgente](https://github.com/Trader855/PDF).
 
-## Funzioni principali della versione 1.7.2
+## Funzioni principali della versione 1.7.3
 
 - sblocco dei PDF protetti quando si conosce la password;
 - riordino, inserimento, rotazione, duplicazione, estrazione ed eliminazione delle pagine;
@@ -36,6 +36,7 @@ Accanto a ogni pacchetto è indicato il tag del relativo
 - compressione ottimizzata per l'invio via e-mail;
 - OCR locale in italiano e inglese per rendere ricercabili le scansioni;
 - ricerca in tutto il documento con `⌘F` su Mac o `Ctrl+F` su Windows, evidenziazione dei risultati e navigazione avanti/indietro;
+- associazione nativa ai documenti PDF su macOS e Windows, per rendere l'app selezionabile in **Apri con**;
 - su Mac, controllo automatico discreto degli aggiornamenti GitHub, con indicatore “Aggiorna”, download su conferma e installazione al riavvio;
 - comando **Aiuto → Controlla aggiornamenti…** nella barra menu dell'app; nella beta Windows mostra correttamente che il canale automatico non è ancora attivo.
 - comando **Aiuto → Codice sorgente e licenze…** sempre collegato a questo
@@ -110,7 +111,7 @@ terminano con esito positivo.
 
 ## Compatibilità
 
-La release pubblica 1.7.2 è compatibile con Mac Apple Silicon (M1, M2, M3, M4 e successivi).
+La release pubblica 1.7.3 è compatibile con Mac Apple Silicon (M1, M2, M3, M4 e successivi).
 Il supporto Windows 10/11 x64 è in fase di validazione: la pipeline crea un
 installer NSIS e un archivio ZIP **non firmati**, conservati come artefatti di
 test per 14 giorni e non pubblicati automaticamente nelle Releases.

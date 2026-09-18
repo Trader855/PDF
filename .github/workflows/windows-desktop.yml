@@ -4,6 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches:
+      - main
       - security-hardening
       - windows-desktop
   pull_request:

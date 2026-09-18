@@ -141,8 +141,25 @@ test('Windows beta keeps its updater isolated from the Mac release channel', () 
   const desktopSecurity = fs.readFileSync(path.join(root, 'desktop-security.js'), 'utf8');
   assert.equal(builder.publish, null);
   assert.equal(builder.fileAssociations[0].name, 'TomorrowNowPDFDocument');
+  assert.equal(builder.fileAssociations[0].ext, 'pdf');
+  assert.equal(builder.fileAssociations[0].mimeType, 'application/pdf');
+  assert.equal(builder.fileAssociations[0].role, 'Editor');
   assert.match(main, /process\.platform === 'win32' \? 'unavailable'/);
   assert.match(desktopSecurity, /windowsHide: process\.platform === 'win32'/);
+});
+
+test('Mac release declares itself as an editor for PDF documents', () => {
+  const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+  const associations = packageJson.build.fileAssociations;
+  assert.equal(associations.length, 1);
+  assert.deepEqual(associations[0], {
+    ext: 'pdf',
+    name: 'TomorrowNowPDFDocument',
+    description: 'Documento PDF',
+    mimeType: 'application/pdf',
+    role: 'Editor',
+  });
+  assert.match(packageJson.scripts['qa:release'], /test:packaged-app/);
 });
 
 test('Release builds create clean output directories before compiling', () => {

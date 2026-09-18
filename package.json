@@ -1,6 +1,6 @@
 {
   "name": "mac-pdf-editor",
-  "version": "1.7.2",
+  "version": "1.7.3",
   "description": "Tomorrow Now PDF Editor: editor PDF locale per macOS e Windows",
   "author": "Tomorrow Now",
   "license": "AGPL-3.0-only",
@@ -18,9 +18,10 @@
     "test:js": "node --check main.js && node --check desktop-security.js && node --check platform-runtime.js && node --check preload.js && node --check renderer.js && node --check path-utils.mjs && node --test tests/security.test.cjs tests/platform-runtime.test.cjs tests/path-utils.test.mjs",
     "test:real-pdf": "node scripts/run_venv_python.cjs -m unittest discover -s tests -v",
     "test:packaged": "node scripts/run_venv_python.cjs scripts/qa_packaged_backend.py",
+    "test:packaged-app": "node scripts/qa_packaged_app.cjs",
     "test:ocr:windows": "node scripts/run_venv_python.cjs scripts/qa_windows_ocr.py",
     "test:ui": "node scripts/qa_desktop_ui.cjs",
-    "qa:release": "pnpm run test && pnpm run build:all && pnpm run dist:mac && pnpm run finalize:dmg && pnpm run test:packaged",
+    "qa:release": "pnpm run test && pnpm run build:all && pnpm run dist:mac && pnpm run test:packaged-app && pnpm run finalize:dmg && pnpm run test:packaged",
     "prepare:build-dirs": "node scripts/prepare_build_dirs.cjs",
     "prebuild:ocr": "pnpm run prepare:build-dirs",
     "build:ocr": "CLANG_MODULE_CACHE_PATH=/tmp/mac-pdf-editor-clang-cache xcrun clang -fobjc-arc -framework Foundation -framework AppKit -framework Vision scripts/mac_pdf_ocr.m -O2 -o dist/mac-pdf-ocr",
@@ -58,6 +59,15 @@
         "owner": "Trader855",
         "repo": "PDF",
         "releaseType": "release"
+      }
+    ],
+    "fileAssociations": [
+      {
+        "ext": "pdf",
+        "name": "TomorrowNowPDFDocument",
+        "description": "Documento PDF",
+        "mimeType": "application/pdf",
+        "role": "Editor"
       }
     ],
     "directories": {
