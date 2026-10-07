@@ -38,6 +38,6 @@ with tempfile.TemporaryDirectory(prefix="pdf-editor-packaged-") as temp_root:
     env = os.environ.copy()
     env["QA_BACKEND_EXECUTABLE"] = str(backend)
     env["QA_FONTS_DIRECTORY"] = str(test_resources / "fonts")
-    if sys.platform == "darwin":
+    if sys.platform in ("darwin", "win32"):
         env["QA_REQUIRE_SCAN_STYLE"] = "1"
     subprocess.run(["node", "--test", "tests/security.test.cjs"], cwd=root, env=env, check=True)
