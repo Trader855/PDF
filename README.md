@@ -76,6 +76,10 @@ Campioni mancanti o ambigui vengono rifiutati, senza font di ripiego automatici.
 Il controllo comprende anche un margine attorno alla parola OCR: se il riquadro
 taglia l'inchiostro di una cifra, la correzione viene rifiutata prima di applicare
 una maschera. Il margine è incluso nei limiti di costo del campionamento.
+Se il bersaglio contiene un livello OCR invisibile, la modalità conservativa
+viene rifiutata: non deve lasciare un vecchio valore ricercabile diverso da
+quello visibile. Per quel caso serve la riscrittura con un font scelto oppure
+una scansione senza livello OCR.
 
 Questa correzione conserva l'immagine sottostante: i numeri originali restano
 recuperabili. **Non è redazione sicura né rimozione definitiva di dati riservati.**

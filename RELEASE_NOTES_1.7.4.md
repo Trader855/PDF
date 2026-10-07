@@ -7,6 +7,8 @@ Correzione della modifica di testo nelle scansioni.
 - Le modifiche native che richiedono un altro font mostrano il nome originale e quello proposto: conferma obbligatoria anche per le sostituzioni multiple. Annullamento ed Esc non salvano modifiche.
 - Corretti gli abbinamenti tra font normali e grassetti; il nome riportato corrisponde alla risorsa realmente usata.
 - I livelli OCR invisibili restano ricercabili ma non vengono trattati come testo nativo visibile: si evita la riscrittura sopra i pixel originali.
+- La modalità cifre viene rifiutata se il bersaglio ha un livello OCR nascosto, per non lasciare il vecchio valore nella ricerca e nel copia/incolla. La riscrittura con un font esplicito resta disponibile.
+- I nomi lunghi dei font troncati da MuPDF vengono ricondotti al nome completo solo quando la rappresentazione è esatta e univoca, conservando normale, grassetto e corsivo senza abbinamenti generici per prefisso.
 - Correzione visiva conservativa di date e numeri nelle scansioni: fino a 16 cifre della stessa lunghezza riusano campioni compatibili della stessa pagina, senza riscrivere il resto della riga.
 - Verifica OCR del risultato prima di rendere disponibile la copia; campioni mancanti, segmentazione ambigua, scansioni ruotate/sfondi colorati e costi di elaborazione eccessivi sono rifiutati.
 - I riquadri OCR che tagliano l'inchiostro delle cifre sono rifiutati prima di applicare maschere o acquisire campioni, con un margine di controllo bounded.

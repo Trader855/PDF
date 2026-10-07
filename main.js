@@ -294,6 +294,8 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 850,
+    minWidth: 980,
+    minHeight: 650,
     ...(process.platform === 'darwin' ? { titleBarStyle: 'hiddenInset' } : {}),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),

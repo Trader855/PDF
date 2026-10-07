@@ -21,24 +21,25 @@ class FontEditSafetyTests(unittest.TestCase):
         main.OCR_INSPECTION_CACHE.clear()
         self.directory.cleanup()
 
-    def native_fixture(self, font_name="AuditEmbedded-Bold", pages=1):
+    def native_fixture(self, font_name="AuditEmbedded-Bold", pages=1, simple=False):
         source = self.root / "native.pdf"
         with fitz.open() as doc:
             for _ in range(pages):
                 page = doc.new_page(width=400, height=250)
                 xref = page.insert_font(fontname="Original", fontfile=str(
-                    main.bundled_fonts_directory() / "liberation/LiberationSans-Bold.ttf"))
+                    main.bundled_fonts_directory() / "liberation/LiberationSans-Bold.ttf"), set_simple=simple)
                 page.insert_text((40, 100), "05/08/2026", fontname="Original", fontsize=18)
                 # A real embedded Type0 font with an unknown PDF face name,
                 # not a customer PDF or a mocked font-coverage result.
                 doc.xref_set_key(xref, "BaseFont", f"/{font_name}")
-                for child in re.findall(r"(\d+) 0 R", doc.xref_get_key(xref, "DescendantFonts")[1]):
+                children = re.findall(r"(\d+) 0 R", doc.xref_get_key(xref, "DescendantFonts")[1])
+                for child in children or [str(xref)]:
                     doc.xref_set_key(int(child), "BaseFont", f"/{font_name}")
                     descriptor = doc.xref_get_key(int(child), "FontDescriptor")[1]
                     doc.xref_set_key(int(descriptor.split()[0]), "FontName", f"/{font_name}")
             doc.save(source)
         span = main.inspect_text(main.InspectRequest(file_path=str(source), include_ocr=False))["spans"][0]
-        self.assertEqual(span["font"], font_name)
+        self.assertEqual(span["font"], re.sub(r"^[A-Z]{6}\+", "", font_name))
         return source, span
 
     def request(self, file_source, span, output="result.pdf", **changes):
@@ -126,6 +127,44 @@ class FontEditSafetyTests(unittest.TestCase):
             self.assertEqual(resource, "hebo")
             self.assertEqual(name, "Helvetica-Bold")
 
+    def test_long_subset_font_name_keeps_its_full_identity_and_original_resource(self):
+        name = "ABCDEF+TimesNewRomanPS-BoldItalicMT"
+        source, span = self.native_fixture(name, simple=True)
+        self.assertEqual(span["font"], "TimesNewRomanPS-BoldItalicMT")
+        self.assertIsNotNone(span["font_resource"])
+        result = main.edit_text(self.request(source, span))
+        self.assertEqual(result["font_used"], span["font"])
+        self.assertIn("06/08/2026", main.inspect_text(main.InspectRequest(file_path=result["output_path"]))["spans"][0]["text"])
+
+    def test_clipped_name_mapping_is_not_a_partial_or_ambiguous_family_match(self):
+        source, _ = self.native_fixture("ABCDEF+TimesNewRomanPS-BoldItalicMT", simple=True)
+        with fitz.open(source) as doc:
+            page = doc[0]
+            self.assertEqual(main.canonical_span_font_name(page, "TimesNewRoman"), "TimesNewRoman")
+            xref = page.insert_font(fontname="Second", fontfile=str(main.bundled_fonts_directory() / "liberation/LiberationSerif-BoldItalic.ttf"), set_simple=True)
+            doc.xref_set_key(xref, "BaseFont", "/GHIJKL+TimesNewRomanPS-BoldItalOther")
+            self.assertEqual(main.canonical_span_font_name(page, "TimesNewRomanPS-BoldItal"), "TimesNewRomanPS-BoldItal")
+
+    def test_base14_batch_keeps_original_font_after_redaction_on_both_pages(self):
+        source = self.root / "times.pdf"
+        changes = []
+        with fitz.open() as doc:
+            for page_num in range(2):
+                page = doc.new_page()
+                page.insert_text((40, 100), "05/08/2026", fontname="tiro")
+                page.insert_text((40, 150), "OTHER FONT", fontname="helv")
+                span = main.native_text_spans(page)[0]
+                changes.append(main.BatchTextChange(page_num=page_num, bbox=span["bbox"], origin=span["origin"],
+                    font=span["font"], font_resource=span["font_resource"], size=span["size"]))
+            doc.save(source)
+        result = main.batch_edit_text(main.BatchEditTextRequest(file_path=str(source), output_path=str(self.root / "times-result.pdf"),
+            old_text="05/08/2026", new_text="06/08/2026", changes=changes))
+        self.assertEqual(result["fonts_used"], ["Times-Roman"])
+        with fitz.open(result["output_path"]) as doc:
+            for page in doc:
+                span = next(item for item in main.native_text_spans(page) if item["text"] == "06/08/2026")
+                self.assertEqual(span["font"], "Times-Roman")
+
     def scan_fixture(self, hidden=True):
         with fitz.open() as doc:
             page = doc.new_page(width=400, height=250)
@@ -171,6 +210,51 @@ class FontEditSafetyTests(unittest.TestCase):
         self.assertEqual(caught.exception.status_code, 422)
         self.assertEqual(source.read_bytes(), before)
         self.assertFalse(Path(request.output_path).exists())
+
+    def test_fragmented_hidden_ocr_and_conservative_digits_fail_without_output(self):
+        source, span, _ = self.scan_fixture(hidden=False)
+        fragmented = self.root / "fragmented.pdf"
+        with fitz.open(source) as doc:
+            for index, word in enumerate(["05", "08", "2026"]):
+                doc[0].insert_text((40 + index * 70, 100), word, fontsize=18, render_mode=3)
+            doc.save(fragmented)
+        with self.assertRaises(HTTPException) as caught:
+            main.edit_text(self.request(fragmented, span))
+        self.assertEqual(caught.exception.status_code, 422)
+        with self.assertRaises(HTTPException) as caught:
+            main.edit_text(self.request(fragmented, span, source="ocr", preserve_scan_digits=True, original_text=span["text"]))
+        self.assertEqual(caught.exception.status_code, 422)
+        self.assertIn("vecchio valore", caught.exception.detail)
+        self.assertFalse((self.root / "result.pdf").exists())
+        with fitz.open(fragmented) as doc:
+            self.assertIn("05", doc[0].get_text(), "Rejected operation leaves the original searchable layer untouched")
+
+    def test_late_batch_font_conflict_is_atomic_not_misindexed_consent(self):
+        source, span = self.native_fixture(pages=2)
+        before = source.read_bytes()
+        changes = [main.BatchTextChange(page_num=index, bbox=span["bbox"], origin=span["origin"],
+            font=span["font"], size=span["size"], confirm_font_substitution=True,
+            confirmed_substitute_font="Liberation Sans Bold") for index in range(2)]
+        resolver = main.resolve_edit_text_font
+        calls = 0
+        def changed_resources(*args):
+            nonlocal calls
+            calls += 1
+            if calls == 3:
+                raise HTTPException(status_code=409, detail={"status": "font_substitution_required",
+                    "substitutions": [{"index": 0, "requested_font": span["font"], "proposed_font": "Other"}]})
+            return resolver(*args)
+        output = self.root / "late-conflict.pdf"
+        with patch.object(main, "resolve_edit_text_font", side_effect=changed_resources), self.assertRaises(HTTPException) as caught:
+            main.batch_edit_text(main.BatchEditTextRequest(file_path=str(source), output_path=str(output),
+                old_text="05/08/2026", new_text="06/08/2026", changes=changes))
+        self.assertEqual(caught.exception.status_code, 422)
+        self.assertIn("Nessuna modifica salvata", caught.exception.detail)
+        self.assertFalse(output.exists())
+        self.assertEqual(source.read_bytes(), before)
+
+    def test_paint_flags_are_bound_to_the_pinned_engine(self):
+        self.assertEqual(fitz.VersionBind, "1.26.5")
 
     def test_searchable_scan_rewrite_matches_image_only_scan_without_overprint(self):
         source, span, _ = self.scan_fixture()

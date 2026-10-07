@@ -1256,21 +1256,38 @@ def visible_text_span(span: Dict[str, Any]) -> bool:
     )
 
 
+def hidden_text_intersects(page: fitz.Page, rect: fitz.Rect) -> bool:
+    return any((trace["type"] == 3 or trace.get("opacity", 1) == 0)
+               and not (fitz.Rect(trace["bbox"]) & rect).is_empty
+               for trace in page.get_texttrace())
+
+
 def require_visible_native_target(page: fitz.Page, rect: fitz.Rect) -> None:
     def overlap_ratio(bbox) -> float:
         overlap = fitz.Rect(bbox) & rect
         area = max(0.0, overlap.width) * max(0.0, overlap.height)
         return area / max(rect.width * rect.height, 1)
 
-    hidden = any((trace["type"] == 3 or trace.get("opacity", 1) == 0)
-                 and overlap_ratio(trace["bbox"]) > .45
-                 for trace in page.get_texttrace())
+    hidden = hidden_text_intersects(page, rect)
     if hidden and not any(overlap_ratio(span["bbox"]) > .45
                           for span in native_text_spans(page)):
         raise HTTPException(status_code=422, detail=(
             "Questo è un livello OCR invisibile, non il testo visibile della pagina. "
             "Seleziona di nuovo il testo per usare la modalità scansione. Nessuna modifica salvata."
         ))
+
+
+def canonical_span_font_name(page: fitz.Page, span_name: str) -> str:
+    # MuPDF 1.26.5 clips the raw PDF font name to 31 bytes before stripping the
+    # subset prefix in text extraction. Match that exact representation only;
+    # never infer a font from an arbitrary family-name prefix or ambiguous set.
+    wanted = normalize_font_name(span_name)
+    names = {str(font[3]) for font in page.get_fonts(full=True)}
+    exact = {name for name in names if normalize_font_name(name) == wanted}
+    candidates = exact or {name for name in names if len(name.encode("utf-8")) > 31
+                          and normalize_font_name(name.encode("utf-8")[:31].decode("utf-8", "ignore")) == wanted}
+    full_names = {re.sub(r"^[A-Z]{6}\+", "", name) for name in candidates}
+    return next(iter(full_names)) if len(full_names) == 1 else span_name
 
 
 def native_text_spans(page: fitz.Page) -> List[Dict[str, Any]]:
@@ -1280,12 +1297,13 @@ def native_text_spans(page: fitz.Page) -> List[Dict[str, Any]]:
             for span in line.get("spans", []):
                 if not visible_text_span(span):
                     continue
+                font_name = canonical_span_font_name(page, span["font"])
                 spans.append({
                     "text": span["text"],
                     "bbox": span["bbox"],
                     "origin": span["origin"],
-                    "font": span["font"],
-                    "font_resource": font_resource_for_span(page, span["font"]),
+                    "font": font_name,
+                    "font_resource": font_resource_for_span(page, font_name),
                     "size": span["size"],
                     "color": span["color"],
                     "ascender": span.get("ascender"),
@@ -1746,7 +1764,12 @@ def batch_edit_text(req: BatchEditTextRequest):
                             overlay=True,
                         )
                         fonts_used.add(font_used)
-                    except HTTPException:
+                    except HTTPException as error:
+                        if error.status_code == 409:
+                            raise HTTPException(status_code=422, detail=(
+                                "Le risorse font sono cambiate durante la modifica multipla. "
+                                "Scegli un carattere dal catalogo e riprova. Nessuna modifica salvata."
+                            )) from error
                         raise
                     except Exception as error:
                         raise HTTPException(
@@ -1792,6 +1815,12 @@ def edit_text(req: EditTextRequest):
         if req.preserve_scan_digits:
             if not is_ocr_text or req.confirm_font_substitution:
                 raise HTTPException(status_code=422, detail="Modalità scansione conservativa non valida")
+            if hidden_text_intersects(page, rect):
+                raise HTTPException(status_code=422, detail=(
+                    "La correzione conservativa non è disponibile su questo livello OCR invisibile: "
+                    "il vecchio valore resterebbe ricercabile. Scegli un font dal catalogo per "
+                    "riscrivere il testo oppure usa una scansione senza livello OCR. Nessuna modifica salvata."
+                ))
             spans, _ = page_text_spans(source_path, req.page_num, page)
             target = next((span for span in spans if span.get("source") == "ocr"
                            and span["text"] == req.original_text
