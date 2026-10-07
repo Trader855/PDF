@@ -43,6 +43,18 @@ assert.equal(pdfType.CFBundleTypeName, 'TomorrowNowPDFDocument');
 const version = readPlistValue('CFBundleShortVersionString', 'raw').trim();
 assert.equal(version, packageJson.version);
 
+const minimumSystemVersion = readPlistValue('LSMinimumSystemVersion', 'raw').trim();
+const numericVersion = value => value.split('.').map(Number).reduce((result, part, index) => result + part / 100 ** index, 0);
+for (const executable of ['mac-pdf-backend', 'mac-pdf-ocr']) {
+  const binary = path.join(path.dirname(plistPath), 'Resources', 'backend', executable);
+  const commands = execFileSync('/usr/bin/otool', ['-l', binary], { encoding: 'utf8' });
+  const minimum = commands.match(/\bminos\s+([\d.]+)/)?.[1]
+    || commands.match(/LC_VERSION_MIN_MACOSX\s+cmdsize\s+\d+\s+version\s+([\d.]+)/)?.[1];
+  assert.ok(minimum, `Minimum macOS version missing from ${executable}`);
+  assert.ok(numericVersion(minimum) <= numericVersion(minimumSystemVersion),
+    `${executable} requires macOS ${minimum}, but the app declares ${minimumSystemVersion}`);
+}
+
 console.log(
   `Pacchetto ${version} verificato: macOS lo registra come Editor per i documenti PDF.`,
 );

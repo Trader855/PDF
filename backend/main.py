@@ -1095,6 +1095,9 @@ def run_ocr_helper(helper: Path, image_path: Path, languages: str = "it-IT,en-US
         subprocess_options["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     process = subprocess.run(
         ocr_helper_command(helper, image_path, languages),
+        # The parent stdin is a long-lived Electron lifecycle pipe. PowerShell
+        # must not inherit it: the helper only reads the image file argument.
+        stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -1186,7 +1189,9 @@ def ocr_spans_inside_images(source_path: Path, page_num: int, page: fitz.Page, n
         pixmap.save(image_path)
         try:
             observations = run_ocr_helper(helper, image_path)
-        except (OSError, RuntimeError, subprocess.TimeoutExpired):
+        except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
+            # No document text, path, credentials or OCR result in diagnostics.
+            print(f"OCR locale non disponibile: {type(error).__name__}", file=sys.stderr, flush=True)
             return []
     finally:
         shutil.rmtree(directory, ignore_errors=True)
