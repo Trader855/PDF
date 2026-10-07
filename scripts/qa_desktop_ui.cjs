@@ -174,8 +174,26 @@ const root = path.resolve(__dirname, '..');
     await page.waitForFunction(() => document.querySelector('#page-indicator').textContent === '1 / 2'
       && document.querySelector('#status').textContent.includes('PDF caricato'));
     await page.locator('#edit-mode').click();
+    // Simulate a late frame without delaying PDF.js or Playwright's own frames.
+    // A deferred editor focus must never steal the user's sidebar focus.
+    await page.evaluate(() => {
+      window.__qaOriginalFrame = window.requestAnimationFrame;
+      window.__qaEditorFrames = [];
+      window.requestAnimationFrame = callback => String(callback).includes('content.focus()')
+        ? (window.__qaEditorFrames.push(callback), 999999)
+        : window.__qaOriginalFrame(callback);
+    });
     await page.locator('.text-box[title="05/08/2026"]').click();
     await page.locator('#selected-text').fill('06/08/2026');
+    await page.evaluate(() => {
+      window.requestAnimationFrame = window.__qaOriginalFrame;
+      const callbacks = window.__qaEditorFrames;
+      delete window.__qaOriginalFrame; delete window.__qaEditorFrames;
+      callbacks.forEach(callback => callback(performance.now()));
+    });
+    assert.equal(await page.evaluate(() => document.activeElement?.id), 'selected-text',
+      'A late editor callback must not steal sidebar focus and redirect typing');
+    assert.equal(await page.locator('.inline-text-content').textContent(), '06/08/2026');
     await page.locator('#apply-edit').click();
     await page.locator('#font-consent-dialog[open]').waitFor();
     assert.match(await page.locator('#font-consent-list').textContent(), /AuditEmbedded-Bold.*Liberation Sans Bold/);
@@ -201,6 +219,7 @@ const root = path.resolve(__dirname, '..');
     await page.locator('#selected-text').fill('06/08/2026');
     await page.locator('#coherent-edit').click();
     await page.locator('#coherent-dialog[open]').waitFor();
+    assert.equal(await page.locator('#coherent-new-text').textContent(), '06/08/2026');
     await page.locator('#apply-coherent-edit').click();
     await page.locator('#font-consent-dialog[open]').waitFor();
     await page.getByRole('button', { name: 'Mantieni originale', exact: true }).click();

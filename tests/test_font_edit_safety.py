@@ -104,6 +104,19 @@ class FontEditSafetyTests(unittest.TestCase):
         with fitz.open(result["output_path"]) as doc:
             self.assertTrue(all("06/08/2026" in page.get_text() for page in doc))
 
+    def test_literal_old_value_is_found_inside_a_longer_replacement(self):
+        source, span = self.native_fixture()
+        result = main.edit_text(self.request(source, span,
+            new_text='05/08/202606/08/2026', confirm_font_substitution=True,
+            confirmed_substitute_font='Liberation Sans Bold'))
+        exact = main.find_repeated_text(main.FindRepeatedTextRequest(
+            file_path=result['output_path'], text='05/08/2026'))
+        literal = main.search_text(main.SearchTextRequest(
+            file_path=result['output_path'], query='05/08/2026'))
+        self.assertEqual(exact['matches'], [])
+        self.assertEqual(len(literal['matches']), 1)
+        self.assertFalse(literal['truncated'])
+
     def test_bold_face_never_matches_a_regular_resource(self):
         source, _ = self.native_fixture(font_name="Helvetica-Bold")
         with fitz.open(source) as doc:

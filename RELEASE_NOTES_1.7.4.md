@@ -20,6 +20,8 @@ Correzione della modifica di testo nelle scansioni.
 - Regressioni sintetiche per bianco, sfondi colorati, font sconosciuti, glifi mancanti, modifiche atomiche e selezione nell'interfaccia Electron.
 - Banner Tomorrow Now più leggibile su Mac e Windows: marchio più grande, motto inglese sempre visibile, contrasto verificato e collegamento al sito.
 - Il processo OCR non eredita più il canale di comunicazione aperto dell'app. La build Mac allinea il requisito del motore OCR a macOS 13 e lo verifica nel pacchetto.
+- Il focus del riquadro di testo non viene più spostato in un frame successivo mentre l'utente sta digitando nel pannello laterale. Un test con frame ritardato impedisce la regressione.
+- La verifica delle sostituzioni multiple cerca il vecchio testo anche dentro righe più lunghe e segnala le ricerche troncate, evitando una conferma positiva basata solo su corrispondenze integrali.
 
 Limite esplicito: questa release non ricostruisce font completi da una scansione
 come i motori dedicati dei prodotti professionali. La correzione delle cifre non

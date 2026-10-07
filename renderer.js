@@ -1740,17 +1740,21 @@ async function applyCoherentEdit() {
 
     let verificationMessage = "";
     try {
-      const verification = await apiRequest("/find-repeated-text", {
+      // The old value may survive inside a longer span (e.g. accidental
+      // concatenation). Exact-span matching alone would falsely report zero.
+      const verification = await apiRequest("/search-text", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           file_path: activePdfPath(),
-          text: originalText,
-          include_ocr: false,
+          query: originalText,
+          max_results: 2000,
         }),
       });
       const remaining = Array.isArray(verification.matches) ? verification.matches.length : 0;
-      verificationMessage = remaining === expectedRemaining
+      verificationMessage = verification.truncated
+        ? " Attenzione: la ricerca ha raggiunto il limite di risultati; la verifica completa non è disponibile."
+        : remaining === expectedRemaining
         ? ` Verifica completata: ${remaining
           ? `${remaining} ${remaining === 1 ? "occorrenza lasciata" : "occorrenze lasciate"} intenzionalmente.`
           : "il vecchio valore non è più presente."}`
@@ -1908,15 +1912,16 @@ function createInlineTextEditor({ kind, origin, span, text }) {
     });
   });
 
-  requestAnimationFrame(() => {
-    content.focus();
-    const selection = window.getSelection();
-    const range = document.createRange();
-    range.selectNodeContents(content);
-    range.collapse(false);
-    selection.removeAllRanges();
-    selection.addRange(range);
-  });
+  // Focus immediately, before the user can choose another field. A delayed
+  // frame can steal focus halfway through typing in the sidebar and append
+  // the replacement to the original text instead of replacing the field.
+  content.focus({ preventScroll: true });
+  const selection = window.getSelection();
+  const range = document.createRange();
+  range.selectNodeContents(content);
+  range.collapse(false);
+  selection.removeAllRanges();
+  selection.addRange(range);
 }
 
 function distanceFromSpan(point, span) {

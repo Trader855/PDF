@@ -266,6 +266,17 @@ test('Renderer security policy and pinned engines do not regress', () => {
   assert.match(renderer, /IntersectionObserver/);
 });
 
+test('Coherent verification checks literal remnants and handles truncated results', () => {
+  const renderer = fs.readFileSync(path.join(root, 'renderer.js'), 'utf8');
+  const start = renderer.indexOf('let verificationMessage = ""');
+  const verification = renderer.slice(start, renderer.indexOf('ui.saveButton.disabled = false;', start));
+  assert.match(verification, /apiRequest\("\/search-text"/);
+  assert.match(verification, /query: originalText/);
+  assert.match(verification, /verification\.truncated/);
+  assert.match(verification, /verifica completa non è disponibile/);
+  assert.doesNotMatch(verification, /apiRequest\("\/find-repeated-text"/);
+});
+
 test('Windows beta keeps its updater isolated from the Mac release channel', () => {
   const builder = require('../electron-builder.windows.cjs');
   const main = fs.readFileSync(path.join(root, 'main.js'), 'utf8');
