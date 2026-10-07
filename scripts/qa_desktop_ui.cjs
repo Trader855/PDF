@@ -14,8 +14,11 @@ const root = path.resolve(__dirname, '..');
   const source = path.join(documents, 'relazione finale.pdf');
   const locked = path.join(documents, 'allegato protetto.pdf');
   const scanned = path.join(documents, 'scansione sintetica.pdf');
+  const unknownFont = path.join(documents, 'native.pdf');
   execFileSync(virtualEnvironmentPython(root), ['-c',
     'import fitz,sys; from pathlib import Path; p=Path(sys.argv[1]); d=fitz.open(); [(d.new_page().insert_text((72,72),"DATA 05/08/2026 PAGINA %d"%i)) for i in range(1,26)]; d.save(p/"relazione finale.pdf"); d.save(p/"allegato protetto.pdf",encryption=fitz.PDF_ENCRYPT_AES_256,owner_pw="owner",user_pw="test-password"); d.close(); d=fitz.open(); s=d.new_page(width=595,height=400); s.insert_text((72,140),"SCANSIONE 05/08/2026",fontsize=32); png=s.get_pixmap(matrix=fitz.Matrix(2,2),alpha=False).tobytes("png"); d.close(); d=fitz.open(); s=d.new_page(width=595,height=400); s.insert_image(s.rect,stream=png); d.save(p/"scansione sintetica.pdf"); d.close()', documents]);
+  execFileSync(virtualEnvironmentPython(root), ['-c',
+    'import sys; from pathlib import Path; sys.path.insert(0,"tests"); from test_font_edit_safety import FontEditSafetyTests; t=FontEditSafetyTests(); t.root=Path(sys.argv[1]); t.native_fixture(pages=2)', documents], { cwd: root });
   const errors = [];
   console.log('QA: launch isolated Electron');
   const application = await _electron.launch({ executablePath: require('electron'),
@@ -29,6 +32,42 @@ const root = path.resolve(__dirname, '..');
     page.on('console', (message) => { if (message.type() === 'error') { console.log('Renderer error:', message.text()); errors.push(message.text()); } });
     await page.waitForFunction(() => !!window.desktopAPI && !!document.querySelector('#pdf-file-input'));
     assert.equal(await page.evaluate(() => window.desktopAPI.platform), process.platform);
+    for (const width of [1000, 1280, 1600]) {
+      await application.evaluate(({ BrowserWindow }, size) => BrowserWindow.getAllWindows()[0].setSize(size, 850), width);
+      await page.waitForFunction(expected => window.outerWidth === expected, width);
+      const banner = await page.locator('#tomorrow-now-banner').evaluate(element => {
+        const bounds = element.getBoundingClientRect();
+        const title = element.querySelector('strong');
+        const motto = element.querySelector('.tomorrow-now-motto');
+        const cta = element.querySelector('.tomorrow-now-cta');
+        const luminance = color => color.match(/[\d.]+/g).slice(0, 3).map(Number)
+          .map(value => value / 255).map(value => value <= .04045 ? value / 12.92 : ((value + .055) / 1.055) ** 2.4)
+          .reduce((total, value, index) => total + value * [.2126, .7152, .0722][index], 0);
+        const contrast = (a, b) => (Math.max(a, b) + .05) / (Math.min(a, b) + .05);
+        const backgrounds = getComputedStyle(element).backgroundImage.match(/rgba?\([^)]+\)/g).map(luminance);
+        const contrastRatios = [title, motto].flatMap(node => backgrounds.map(background =>
+          contrast(luminance(getComputedStyle(node).color), background)));
+        contrastRatios.push(contrast(luminance(getComputedStyle(cta).color), luminance(getComputedStyle(cta).backgroundColor)));
+        const inside = node => {
+          const box = node.getBoundingClientRect();
+          return box.x >= bounds.x && box.right <= bounds.right && box.y >= bounds.y && box.bottom <= bounds.bottom;
+        };
+        return { title: title.textContent, motto: motto.textContent, height: bounds.height,
+          titleSize: parseFloat(getComputedStyle(title).fontSize), mottoSize: parseFloat(getComputedStyle(motto).fontSize),
+          contrast: Math.min(...contrastRatios),
+          visible: [title, motto, cta].every(inside) && getComputedStyle(motto).display !== 'none',
+          noOverlap: motto.getBoundingClientRect().right < cta.getBoundingClientRect().x };
+      });
+      assert.equal(banner.title, 'Tomorrow Now');
+      assert.equal(banner.motto, 'Software that powers what’s next.');
+      assert.ok(banner.height >= 70 && banner.titleSize >= 19 && banner.mottoSize >= 12);
+      assert.ok(banner.visible && banner.noOverlap, `Banner fits at ${width}px`);
+      assert.ok(banner.contrast >= 4.5, `Banner text contrast is at least 4.5:1 (${banner.contrast})`);
+      if (process.env.QA_BANNER_SCREENSHOT) await page.locator('#tomorrow-now-banner')
+        .screenshot({ path: process.env.QA_BANNER_SCREENSHOT.replace(/\.png$/, `-${width}.png`) });
+    }
+    await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1280, 850));
+    console.log('QA: Tomorrow Now banner and English motto readable at 1000, 1280 and 1600px.');
     await page.locator('#pdf-file-input').setInputFiles(source);
     console.log('QA: input selected');
     await page.waitForFunction(() => document.querySelector('#page-indicator').textContent.includes('25'), { timeout: 30000 });
@@ -129,6 +168,53 @@ const root = path.resolve(__dirname, '..');
     await page.waitForFunction(() => document.querySelector('.inline-text-content')?.style.fontFamily.includes('MacPdf-'));
     if (process.env.QA_SCAN_SCREENSHOT) await page.screenshot({ path: process.env.QA_SCAN_SCREENSHOT });
     console.log('QA: scanned font is unknown, explicit font choice uses the exact preview and survives reselection.');
+    await page.locator('#pdf-file-input').setInputFiles(unknownFont);
+    await page.waitForFunction(() => document.querySelector('#page-indicator').textContent === '1 / 2'
+      && document.querySelector('#status').textContent.includes('PDF caricato'));
+    await page.locator('#edit-mode').click();
+    await page.locator('.text-box[title="05/08/2026"]').click();
+    await page.locator('#selected-text').fill('06/08/2026');
+    await page.locator('#apply-edit').click();
+    await page.locator('#font-consent-dialog[open]').waitFor();
+    assert.match(await page.locator('#font-consent-list').textContent(), /AuditEmbedded-Bold.*Liberation Sans Bold/);
+    if (process.env.QA_FONT_CONSENT_SCREENSHOT) await page.screenshot({ path: process.env.QA_FONT_CONSENT_SCREENSHOT });
+    await page.getByRole('button', { name: 'Mantieni originale', exact: true }).click();
+    await page.waitForFunction(() => document.querySelector('#status').textContent.includes('annullato'));
+    assert.equal(await page.locator('#undo-action').isDisabled(), true);
+    await page.locator('.text-box[title="05/08/2026"]').waitFor();
+    await page.locator('#apply-edit').click();
+    await page.locator('#font-consent-dialog[open]').waitFor();
+    await page.keyboard.press('Escape');
+    await page.waitForFunction(() => document.querySelector('#status').textContent.includes('annullato'));
+    assert.equal(await page.locator('#undo-action').isDisabled(), true);
+    await page.locator('#apply-edit').click();
+    await page.locator('#font-consent-dialog[open]').waitFor();
+    await page.locator('#confirm-font-substitution').click();
+    await page.locator('.text-box[title="06/08/2026"]').waitFor();
+    assert.equal(await page.locator('#undo-action').isDisabled(), false);
+    await page.locator('#pdf-file-input').setInputFiles(unknownFont);
+    await page.waitForFunction(() => document.querySelector('#status').textContent.includes('PDF caricato'));
+    await page.locator('#edit-mode').click();
+    await page.locator('.text-box[title="05/08/2026"]').click();
+    await page.locator('#selected-text').fill('06/08/2026');
+    await page.locator('#coherent-edit').click();
+    await page.locator('#coherent-dialog[open]').waitFor();
+    await page.locator('#apply-coherent-edit').click();
+    await page.locator('#font-consent-dialog[open]').waitFor();
+    await page.getByRole('button', { name: 'Mantieni originale', exact: true }).click();
+    await page.waitForFunction(() => document.querySelector('#status').textContent.includes('Sostituzioni annullate'));
+    assert.equal(await page.locator('#coherent-dialog').isVisible(), true);
+    assert.equal(await page.locator('#undo-action').isDisabled(), true);
+    await page.locator('#apply-coherent-edit').click();
+    await page.locator('#font-consent-dialog[open]').waitFor();
+    await page.locator('#confirm-font-substitution').click();
+    await page.locator('#coherent-dialog').waitFor({ state: 'hidden' });
+    await page.waitForFunction(() => document.querySelector('#status').textContent.includes('2 occorrenze aggiornate')
+      && document.querySelector('#status').textContent.includes('il vecchio valore non è più presente'));
+    await page.locator('.text-box[title="06/08/2026"]').waitFor();
+    await page.locator('.thumbnail-button[data-page-number="2"]').click();
+    await page.locator('.text-box[title="06/08/2026"]').waitFor();
+    console.log('QA: font substitution names, cancellation, Escape, single and atomic batch consent verified.');
     assert.deepEqual(errors, []);
     console.log('Electron UI QA OK: open, edit, font preview, page 25, bounded thumbnails, password-protected insertion, IPC boundary.');
   } catch (error) {

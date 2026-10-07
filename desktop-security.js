@@ -213,6 +213,22 @@ class BackendSession {
         });
         if (!response.ok) {
           const error = await response.json().catch(() => ({}));
+          // A narrowly typed conflict is an uncommitted operation, not an
+          // output capability. Only the edit flows can ask for font consent.
+          const detail = error.detail;
+          const limit = endpoint === '/batch-edit-text' ? payload.changes?.length : 1;
+          if (response.status === 409 && ['/edit-text', '/batch-edit-text'].includes(endpoint)
+              && detail?.status === 'font_substitution_required'
+              && Array.isArray(detail.substitutions) && detail.substitutions.length > 0
+              && detail.substitutions.length <= 500
+              && new Set(detail.substitutions.map(item => item?.index)).size === detail.substitutions.length
+              && detail.substitutions.every(item => Number.isInteger(item.index) && item.index >= 0 && item.index < limit
+                && typeof item.requested_font === 'string' && item.requested_font.length <= 256
+                && typeof item.proposed_font === 'string' && item.proposed_font.length > 0 && item.proposed_font.length <= 256)) {
+            return { status: 'font_substitution_required', substitutions: detail.substitutions.map(item => ({
+              index: item.index, requested_font: item.requested_font, proposed_font: item.proposed_font,
+            })) };
+          }
           throw new Error(typeof error.detail === 'string' ? error.detail : `Operazione non riuscita (${response.status})`);
         }
         if (endpoint.startsWith('/font-file/')) return new Uint8Array(await response.arrayBuffer());

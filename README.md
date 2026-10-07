@@ -49,6 +49,21 @@ Accanto a ogni pacchetto è indicato il tag del relativo
 - letture e salvataggi limitati ai documenti autorizzati tramite selezione
   file e al percorso confermato nel dialogo nativo di salvataggio.
 
+### Novità del sorgente, in attesa di release
+
+- La sostituzione automatica del font durante una modifica nativa richiede una
+  conferma con il nome originale e quello proposto, anche per **Modifica ovunque**.
+  Annullare non crea un PDF modificato; il consenso vale solo per il font indicato.
+- Normale e grassetto non vengono più abbinati per somiglianza parziale del nome.
+- Il testo OCR invisibile resta ricercabile, ma non viene presentato come testo
+  nativo modificabile sopra i pixel della scansione.
+- La fascia Tomorrow Now mostra il marchio più grande e il motto inglese anche
+  nelle finestre strette, con contrasto e navigazione da tastiera migliorati.
+  La stessa interfaccia è inclusa nelle build Mac e Windows.
+
+Queste novità non aggiornano da sole i pacchetti già installati: servono nuove
+build, verifica dei pacchetti e pubblicazione della release.
+
 ### Testo dentro le scansioni
 
 L'OCR riconosce il contenuto, non il carattere originale. Un'immagine scansionata
@@ -120,6 +135,10 @@ accedervi. La rimozione all'uscita non è una cancellazione forense.
 
 `pnpm test` esegue la suite automatica su caratteri, font, modifica e aggiunta
 testo, salvataggi ripetuti, pagine, annotazioni, immagini e moduli.
+`tests/test_font_edit_safety.py` aggiunge PDF sintetici per consenso sul font,
+stili, livelli OCR invisibili e salvataggi atomici. I test IPC verificano che una
+richiesta di conferma non autorizzi un file di output; `pnpm run test:ui` prova
+annullamento, Esc, conferma singola/multipla e banner a 1000, 1280 e 1600 pixel.
 
 Per includere un PDF reale nella regressione:
 

@@ -184,6 +184,7 @@ class EditTextRequest(BaseModel):
     source: str = "native"
     background_color: int = 0xFFFFFF
     confirm_font_substitution: bool = False
+    confirmed_substitute_font: Optional[str] = Field(default=None, max_length=256)
     preserve_scan_digits: bool = False
     original_text: str = Field(default="", max_length=2000)
 
@@ -205,6 +206,7 @@ class BatchTextChange(BaseModel):
     source: str = "native"
     background_color: int = 0xFFFFFF
     confirm_font_substitution: bool = False
+    confirmed_substitute_font: Optional[str] = Field(default=None, max_length=256)
 
 
 class BatchEditTextRequest(BaseModel):
@@ -502,13 +504,12 @@ def font_resource_for_span(
         base_font = normalize_font_name(font[3])
         resource_name = font[4]
         exact_match = bool(wanted and base_font == wanted)
-        partial_match = bool(wanted and (wanted in base_font or base_font in wanted))
-        if not (exact_match or partial_match) or not font_resource_supports_text(page, font, text):
+        if not exact_match or not font_resource_supports_text(page, font, text):
             continue
 
         encoding = str(font[5] or "").casefold()
         font_type = str(font[2] or "").casefold()
-        score = 100 if exact_match else 50
+        score = 100
         if "winansi" in encoding:
             score += 30
         if font_type in {"truetype", "type1"}:
@@ -522,6 +523,7 @@ def requested_font_resource(
     page: fitz.Page,
     resource_name: Optional[str],
     text: str = "",
+    expected_name: Optional[str] = None,
 ) -> Optional[str]:
     if not resource_name:
         return None
@@ -529,7 +531,10 @@ def requested_font_resource(
         (
             font[4]
             for font in page.get_fonts(full=True)
-            if font[4] == resource_name and font_resource_supports_text(page, font, text)
+            if font[4] == resource_name
+            and (expected_name is None or bool(normalize_font_name(expected_name))
+                 and normalize_font_name(font[3]) == normalize_font_name(expected_name))
+            and font_resource_supports_text(page, font, text)
         ),
         None,
     )
@@ -545,11 +550,12 @@ def resolve_text_font(
 ) -> Tuple[str, str]:
     """Sceglie un font solo dopo aver verificato tutti i glifi richiesti."""
     if allow_original_resource:
-        resource = requested_font_resource(page, requested_resource, text)
+        resource = requested_font_resource(page, requested_resource, text, expected_name=requested_name)
         if not resource:
             resource = font_resource_for_span(page, requested_name, text)
         if resource:
-            return resource, requested_name
+            actual_name = next(font[3] for font in page.get_fonts(full=True) if font[4] == resource)
+            return resource, re.sub(r"^[A-Z]{6}\+", "", actual_name)
 
     local = local_font_match(requested_name)
     if local and font_file_supports_text(local["path"], text):
@@ -576,6 +582,19 @@ def resolve_text_font(
             "Il testo originale non è stato modificato."
         ),
     )
+
+
+def resolve_edit_text_font(page: fitz.Page, requested_name: str, requested_resource: Optional[str],
+                           text: str, confirmed: bool, confirmed_font: Optional[str]) -> Tuple[str, str]:
+    """Un font diverso richiede consenso sul nome effettivamente proposto."""
+    resource, actual_name = resolve_text_font(page, requested_name, requested_resource, text)
+    if normalize_font_name(actual_name) != normalize_font_name(requested_name):
+        if not confirmed or normalize_font_name(confirmed_font or "") != normalize_font_name(actual_name):
+            raise HTTPException(status_code=409, detail={
+                "status": "font_substitution_required",
+                "substitutions": [{"index": 0, "requested_font": requested_name, "proposed_font": actual_name}],
+            })
+    return resource, actual_name
 
 
 def require_scan_font_choice(font: str, confirmed: bool, new_text: str) -> None:
@@ -1229,11 +1248,38 @@ def ocr_spans_inside_images(source_path: Path, page_num: int, page: fitz.Page, n
     return recognized
 
 
+def visible_text_span(span: Dict[str, Any]) -> bool:
+    # PyMuPDF 1.26.5 separates ignored OCR text via alpha / paint flags.
+    # Filled and stroked text remain selectable, including artificial bold.
+    return span.get("alpha", 255) > 0 and (
+        "char_flags" not in span or bool(span["char_flags"] & (16 | 32))
+    )
+
+
+def require_visible_native_target(page: fitz.Page, rect: fitz.Rect) -> None:
+    def overlap_ratio(bbox) -> float:
+        overlap = fitz.Rect(bbox) & rect
+        area = max(0.0, overlap.width) * max(0.0, overlap.height)
+        return area / max(rect.width * rect.height, 1)
+
+    hidden = any((trace["type"] == 3 or trace.get("opacity", 1) == 0)
+                 and overlap_ratio(trace["bbox"]) > .45
+                 for trace in page.get_texttrace())
+    if hidden and not any(overlap_ratio(span["bbox"]) > .45
+                          for span in native_text_spans(page)):
+        raise HTTPException(status_code=422, detail=(
+            "Questo è un livello OCR invisibile, non il testo visibile della pagina. "
+            "Seleziona di nuovo il testo per usare la modalità scansione. Nessuna modifica salvata."
+        ))
+
+
 def native_text_spans(page: fitz.Page) -> List[Dict[str, Any]]:
     spans: List[Dict[str, Any]] = []
     for block in page.get_text("dict")["blocks"]:
         for line in block.get("lines", []):
             for span in line.get("spans", []):
+                if not visible_text_span(span):
+                    continue
                 spans.append({
                     "text": span["text"],
                     "bbox": span["bbox"],
@@ -1608,7 +1654,8 @@ def batch_edit_text(req: BatchEditTextRequest):
     try:
         # Tutti i font vengono verificati prima della prima redazione: se una
         # sola sostituzione non è rappresentabile, il PDF originale resta intatto.
-        for change in req.changes:
+        substitutions = []
+        for change_index, change in enumerate(req.changes):
             if change.page_num >= document.page_count:
                 raise HTTPException(status_code=400, detail="Una pagina selezionata non esiste più")
             page = document[change.page_num]
@@ -1631,20 +1678,33 @@ def batch_edit_text(req: BatchEditTextRequest):
                 require_scan_font_choice(change.font, change.confirm_font_substitution, req.new_text)
                 background, _ = sampled_image_colors(bounded_pixmap(page), rect, page.rect)
                 change = change.model_copy(update={"background_color": background})
+            else:
+                require_visible_native_target(page, rect)
             if req.new_text:
-                font_resource, font_used = resolve_text_font(
-                    page,
-                    change.font,
-                    change.font_resource,
-                    req.new_text,
-                    allow_original_resource=change.source != "ocr",
-                    allow_font_substitution=change.source != "ocr",
-                )
+                if change.source == "ocr":
+                    font_resource, font_used = resolve_text_font(
+                        page, change.font, change.font_resource, req.new_text,
+                        allow_original_resource=False, allow_font_substitution=False,
+                    )
+                else:
+                    try:
+                        font_resource, font_used = resolve_edit_text_font(
+                            page, change.font, change.font_resource, req.new_text,
+                            change.confirm_font_substitution, change.confirmed_substitute_font,
+                        )
+                    except HTTPException as error:
+                        if error.status_code != 409 or not isinstance(error.detail, dict):
+                            raise
+                        substitutions.append({**error.detail["substitutions"][0], "index": change_index})
+                        continue
                 if change.source == "ocr":
                     change = change.model_copy(update={"size": fitted_scan_font_size(page, font_resource, req.new_text, change.size, rect, change.origin)})
             prepared_by_page.setdefault(change.page_num, []).append(
                 (change, font_resource, font_used)
             )
+
+        if substitutions:
+            raise HTTPException(status_code=409, detail={"status": "font_substitution_required", "substitutions": substitutions})
 
         fonts_used = set()
         for page_num, prepared_changes in prepared_by_page.items():
@@ -1666,11 +1726,16 @@ def batch_edit_text(req: BatchEditTextRequest):
                 for change, font_resource, font_used in prepared_changes:
                     try:
                         # Redaction may prune fonts registered during preflight.
-                        font_resource, font_used = resolve_text_font(
-                            page, change.font, font_resource, req.new_text,
-                            allow_original_resource=change.source != "ocr",
-                            allow_font_substitution=change.source != "ocr",
-                        )
+                        if change.source == "ocr":
+                            font_resource, font_used = resolve_text_font(
+                                page, change.font, font_resource, req.new_text,
+                                allow_original_resource=False, allow_font_substitution=False,
+                            )
+                        else:
+                            font_resource, font_used = resolve_edit_text_font(
+                                page, change.font, font_resource, req.new_text,
+                                change.confirm_font_substitution, change.confirmed_substitute_font,
+                            )
                         page.insert_text(
                             fitz.Point(change.origin),
                             req.new_text,
@@ -1681,6 +1746,8 @@ def batch_edit_text(req: BatchEditTextRequest):
                             overlay=True,
                         )
                         fonts_used.add(font_used)
+                    except HTTPException:
+                        raise
                     except Exception as error:
                         raise HTTPException(
                             status_code=422,
@@ -1720,6 +1787,8 @@ def edit_text(req: EditTextRequest):
             raise HTTPException(status_code=400, detail="Coordinate del testo non valide")
 
         is_ocr_text = req.source == "ocr"
+        if not is_ocr_text:
+            require_visible_native_target(page, rect)
         if req.preserve_scan_digits:
             if not is_ocr_text or req.confirm_font_substitution:
                 raise HTTPException(status_code=422, detail="Modalità scansione conservativa non valida")
@@ -1761,14 +1830,16 @@ def edit_text(req: EditTextRequest):
         if req.new_text:
             # Preflight prima della redazione: un glifo mancante non deve mai
             # cancellare il contenuto originale lasciando il riquadro vuoto.
-            font_resource, font_used = resolve_text_font(
-                page,
-                req.font,
-                req.font_resource,
-                req.new_text,
-                allow_original_resource=not is_ocr_text,
-                allow_font_substitution=not is_ocr_text,
-            )
+            if is_ocr_text:
+                font_resource, font_used = resolve_text_font(
+                    page, req.font, req.font_resource, req.new_text,
+                    allow_original_resource=False, allow_font_substitution=False,
+                )
+            else:
+                font_resource, font_used = resolve_edit_text_font(
+                    page, req.font, req.font_resource, req.new_text,
+                    req.confirm_font_substitution, req.confirmed_substitute_font,
+                )
             if is_ocr_text:
                 size_used = fitted_scan_font_size(page, font_resource, req.new_text, req.size, rect, req.origin)
 
@@ -1783,11 +1854,16 @@ def edit_text(req: EditTextRequest):
 
         if req.new_text:
             try:
-                font_resource, font_used = resolve_text_font(
-                    page, req.font, font_resource, req.new_text,
-                    allow_original_resource=not is_ocr_text,
-                    allow_font_substitution=not is_ocr_text,
-                )
+                if is_ocr_text:
+                    font_resource, font_used = resolve_text_font(
+                        page, req.font, font_resource, req.new_text,
+                        allow_original_resource=False, allow_font_substitution=False,
+                    )
+                else:
+                    font_resource, font_used = resolve_edit_text_font(
+                        page, req.font, font_resource, req.new_text,
+                        req.confirm_font_substitution, req.confirmed_substitute_font,
+                    )
                 page.insert_text(
                     fitz.Point(req.origin),
                     req.new_text,
@@ -1797,6 +1873,8 @@ def edit_text(req: EditTextRequest):
                     rotate=upright_text_rotation(page),
                     overlay=True,
                 )
+            except HTTPException:
+                raise
             except Exception as error:
                 raise HTTPException(
                     status_code=422,

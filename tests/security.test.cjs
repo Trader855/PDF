@@ -135,6 +135,72 @@ test('Actual backend: private pipe, ephemeral port, auth, fonts, passwords, roun
   }
 });
 
+test('Font consent crosses IPC without granting an output until confirmation', { timeout: 30000 }, async () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'pdf-font-consent-ipc-'));
+  let session;
+  try {
+    execFileSync(python, ['-c',
+      'import sys; from pathlib import Path; sys.path.insert(0,"tests"); from test_font_edit_safety import FontEditSafetyTests; t=FontEditSafetyTests(); t.root=Path(sys.argv[1]); t.native_fixture(pages=2)', temp], { cwd: root });
+    const packaged = process.env.QA_BACKEND_EXECUTABLE;
+    session = new BackendSession({ executable: packaged || python,
+      args: packaged ? [] : [path.join(root, 'backend/main.py')],
+      cwd: root, fonts: process.env.QA_FONTS_DIRECTORY || path.join(root, 'assets/fonts'), tempRoot: temp, log: () => {} });
+    await session.ready;
+    const source = session.files.register(path.join(temp, 'native.pdf'));
+    const before = fs.readFileSync(source);
+    const span = (await session.request('/inspect-text', { file_path: source, include_ocr: false })).spans[0];
+    const change = { ...span, page_num: 0 };
+    const edit = { ...change, file_path: source, new_text: '06/08/2026' };
+    const conflict = await session.request('/edit-text', edit);
+    assert.deepEqual(conflict, { status: 'font_substitution_required', substitutions: [
+      { index: 0, requested_font: 'AuditEmbedded-Bold', proposed_font: 'Liberation Sans Bold' },
+    ] });
+    assert.deepEqual(fs.readFileSync(source), before);
+    assert.equal(fs.readdirSync(session.directory).filter(name => name.endsWith('.pdf')).length, 0);
+    assert.equal(session.files.allowed.size, 1, 'Conflict must not authorize a new path');
+    const batch = await session.request('/batch-edit-text', { file_path: source,
+      old_text: span.text, new_text: edit.new_text, changes: [change, { ...change, page_num: 1 }] });
+    assert.deepEqual(batch.substitutions.map(item => item.index), [0, 1]);
+    assert.equal(fs.readdirSync(session.directory).filter(name => name.endsWith('.pdf')).length, 0);
+    const result = await session.request('/edit-text', { ...edit, confirm_font_substitution: true,
+      confirmed_substitute_font: conflict.substitutions[0].proposed_font });
+    assert.equal(result.font_used, 'Liberation Sans Bold');
+    assert.equal(isDirectChild(session.directory, result.output_path), true);
+    assert.ok((await session.request('/inspect-text', { file_path: result.output_path })).spans
+      .some(item => item.text === edit.new_text));
+  } finally {
+    if (session) await session.stop();
+    fs.rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+test('Font conflict transport rejects malformed details and strips unexpected capabilities', async () => {
+  const session = Object.assign(Object.create(BackendSession.prototype), {
+    pending: 0, queue: Promise.resolve(), ready: Promise.resolve(), stopped: false,
+    base: 'http://127.0.0.1:1', token: 'synthetic-test-token',
+    files: { require: value => value, registerOutput: () => assert.fail('No output can be granted on conflict') },
+  });
+  const originalFetch = global.fetch;
+  const item = { index: 0, requested_font: '<b>Original</b>', proposed_font: 'Liberation Sans' };
+  try {
+    global.fetch = async () => ({ ok: false, status: 409, json: async () => ({
+      detail: { status: 'font_substitution_required', substitutions: [{ ...item, output_path: '/unexpected' }],
+        output_path: '/unexpected' },
+    }) });
+    assert.deepEqual(await session.request('/edit-text', { file_path: 'synthetic' }), {
+      status: 'font_substitution_required', substitutions: [item],
+    });
+    for (const substitutions of [[], [{ ...item, index: 1 }], [{ ...item, proposed_font: '' }],
+      [{ ...item, proposed_font: 'x'.repeat(257) }], [item, item]]) {
+      global.fetch = async () => ({ ok: false, status: 409, json: async () => ({
+        detail: { status: 'font_substitution_required', substitutions },
+      }) });
+      await assert.rejects(session.request('/edit-text', { file_path: 'synthetic' }), /409/);
+    }
+    await assert.rejects(session.request('/add-text', { file_path: 'synthetic' }), /409/);
+  } finally { global.fetch = originalFetch; }
+});
+
 test('Abandoned session cleanup never touches unrelated or live directories', () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'pdf-cleanup-'));
   try {

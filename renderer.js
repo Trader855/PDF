@@ -135,6 +135,9 @@ const ui = {
   selectedSize: document.querySelector("#selected-size"),
   coherentButton: document.querySelector("#coherent-edit"),
   coherentDialog: document.querySelector("#coherent-dialog"),
+  fontConsentDialog: document.querySelector("#font-consent-dialog"),
+  fontConsentList: document.querySelector("#font-consent-list"),
+  fontConsentApply: document.querySelector("#confirm-font-substitution"),
   coherentSummary: document.querySelector("#coherent-summary"),
   coherentOldText: document.querySelector("#coherent-old-text"),
   coherentNewText: document.querySelector("#coherent-new-text"),
@@ -478,6 +481,42 @@ async function apiRequest(endpoint, options = {}) {
   } catch (error) {
     throw new Error(error.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, ''));
   }
+}
+
+async function requestTextEditWithConsent(endpoint, payload) {
+  const send = () => apiRequest(endpoint, { method: "POST", body: JSON.stringify(payload) });
+  let result = await send();
+  if (result.status !== "font_substitution_required") return result;
+
+  const pairs = new Map(result.substitutions.map(item => [
+    `${item.requested_font}\n${item.proposed_font}`, item,
+  ]));
+  ui.fontConsentList.replaceChildren(...[...pairs.values()].map(item => {
+    const row = document.createElement("li");
+    const original = document.createElement("span");
+    original.textContent = item.requested_font || "Font non identificato";
+    const replacement = document.createElement("strong");
+    replacement.textContent = item.proposed_font;
+    row.append(original, document.createTextNode(" → "), replacement);
+    return row;
+  }));
+  ui.fontConsentDialog.returnValue = "";
+  const decision = new Promise(resolve => ui.fontConsentDialog.addEventListener("close", () => {
+    resolve(ui.fontConsentDialog.returnValue === "confirm");
+  }, { once: true }));
+  ui.fontConsentDialog.showModal();
+  if (!await decision) return null;
+
+  for (const substitution of result.substitutions) {
+    const change = endpoint === "/batch-edit-text" ? payload.changes[substitution.index] : payload;
+    change.confirm_font_substitution = true;
+    change.confirmed_substitute_font = substitution.proposed_font;
+  }
+  result = await send();
+  if (result.status === "font_substitution_required") {
+    throw new Error("Il font disponibile è cambiato: nessuna modifica salvata. Riprova e controlla la proposta.");
+  }
+  return result;
 }
 
 async function loadFontCatalog() {
@@ -1509,27 +1548,27 @@ async function applySelectedEdit({ movementOnly = false } = {}) {
   setStatus("Applicazione della modifica…");
 
   try {
-    const result = await apiRequest("/edit-text", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        file_path: activePdfPath(),
-        output_path: null,
-        page_num: state.pageNumber - 1,
-        bbox: span.bbox,
-        origin: state.pendingEditOrigin,
-        new_text: newText,
-        font: selectedFont,
-        font_resource: selectedResource,
-        size: newSize,
-        color: Number(span.color) || 0,
-        source: span.source || "native",
-        confirm_font_substitution: span.source === "ocr" && !preserveScanDigits && state.fontCatalog.has(selectedFont),
-        preserve_scan_digits: preserveScanDigits,
-        original_text: preserveScanDigits ? span.text || "" : "",
-        background_color: Number.isFinite(Number(span.background_color)) ? Number(span.background_color) : 0xFFFFFF,
-      }),
+    const result = await requestTextEditWithConsent("/edit-text", {
+      file_path: activePdfPath(),
+      output_path: null,
+      page_num: state.pageNumber - 1,
+      bbox: span.bbox,
+      origin: state.pendingEditOrigin,
+      new_text: newText,
+      font: selectedFont,
+      font_resource: selectedResource,
+      size: newSize,
+      color: Number(span.color) || 0,
+      source: span.source || "native",
+      confirm_font_substitution: span.source === "ocr" && !preserveScanDigits && state.fontCatalog.has(selectedFont),
+      preserve_scan_digits: preserveScanDigits,
+      original_text: preserveScanDigits ? span.text || "" : "",
+      background_color: Number.isFinite(Number(span.background_color)) ? Number(span.background_color) : 0xFFFFFF,
     });
+    if (!result) {
+      setStatus("Cambio del carattere annullato. Nessuna modifica salvata.");
+      return;
+    }
 
     commitMutation(result.output_path);
     const editedPage = state.pageNumber;
@@ -1669,29 +1708,29 @@ async function applyCoherentEdit() {
   setStatus(`Aggiornamento atomico di ${selectedMatches.length} occorrenze…`);
 
   try {
-    const result = await apiRequest("/batch-edit-text", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        file_path: activePdfPath(),
-        output_path: null,
-        old_text: originalText,
-        new_text: replacementText,
-        changes: selectedMatches.map((match) => ({
-          page_num: match.page_num,
-          bbox: match.bbox,
-          origin: match.origin,
-          font: match.font,
-          font_resource: match.font_resource,
-          size: match.size,
-          color: match.color,
-          source: match.source || "native",
-          background_color: Number.isFinite(Number(match.background_color))
-            ? Number(match.background_color)
-            : 0xFFFFFF,
-        })),
-      }),
+    const result = await requestTextEditWithConsent("/batch-edit-text", {
+      file_path: activePdfPath(),
+      output_path: null,
+      old_text: originalText,
+      new_text: replacementText,
+      changes: selectedMatches.map((match) => ({
+        page_num: match.page_num,
+        bbox: match.bbox,
+        origin: match.origin,
+        font: match.font,
+        font_resource: match.font_resource,
+        size: match.size,
+        color: match.color,
+        source: match.source || "native",
+        background_color: Number.isFinite(Number(match.background_color))
+          ? Number(match.background_color)
+          : 0xFFFFFF,
+      })),
     });
+    if (!result) {
+      setStatus("Sostituzioni annullate. Nessuna modifica salvata.");
+      return;
+    }
 
     commitMutation(result.output_path);
     ui.coherentDialog.close();
@@ -2610,6 +2649,8 @@ ui.unlockDialog.addEventListener('close', () => { pendingPasswordInsert = null; 
 document.querySelectorAll("[data-close-dialog]").forEach((button) => {
   button.addEventListener("click", () => document.querySelector(`#${button.dataset.closeDialog}`)?.close());
 });
+
+ui.fontConsentApply.addEventListener("click", () => ui.fontConsentDialog.close("confirm"));
 
 ui.fileInput.addEventListener("change", () => {
   const file = ui.fileInput.files?.[0];
