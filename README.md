@@ -73,6 +73,9 @@ lunghezza: riusa sagome compatibili della stessa pagina e non riscrive la riga.
 Serve una scansione non ruotata su sfondo bianco, con parole e cifre isolabili e
 campioni sufficienti. L'OCR deve confermare la riga finale prima del salvataggio.
 Campioni mancanti o ambigui vengono rifiutati, senza font di ripiego automatici.
+Il controllo comprende anche un margine attorno alla parola OCR: se il riquadro
+taglia l'inchiostro di una cifra, la correzione viene rifiutata prima di applicare
+una maschera. Il margine è incluso nei limiti di costo del campionamento.
 
 Questa correzione conserva l'immagine sottostante: i numeri originali restano
 recuperabili. **Non è redazione sicura né rimozione definitiva di dati riservati.**

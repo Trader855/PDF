@@ -1,4 +1,5 @@
 import hashlib
+import copy
 import tempfile
 import unittest
 from pathlib import Path
@@ -87,6 +88,29 @@ class ScanDigitTests(unittest.TestCase):
         source, target = self.fixture("DATA 05/08/2026")
         with fitz.open(source) as d, self.assertRaises(ScanPreservationError):
             prepare_digit_corrections(d[0], [target], target, "DATA 05/08/2029")
+
+    def test_clipped_ocr_word_is_rejected_before_masking_or_donor_capture(self):
+        source, target = self.fixture()
+        original_bytes = source.read_bytes()
+        for edge in ("top", "bottom", "left", "right"):
+            clipped = copy.deepcopy(target)
+            bbox = clipped["words"][1]["bbox"]
+            if edge == "top":
+                bbox[1] += (bbox[3] - bbox[1]) * .3
+            elif edge == "bottom":
+                bbox[3] -= (bbox[3] - bbox[1]) * .35
+            elif edge == "left":
+                bbox[0] += 4
+            else:
+                bbox[2] -= 4
+            with self.subTest(edge=edge), fitz.open(source) as document:
+                before = document[0].get_pixmap().samples
+                with self.assertRaises(ScanPreservationError):
+                    prepare_digit_corrections(document[0], [clipped], clipped,
+                                              clipped["text"].replace("05/", "06/"))
+                self.assertEqual(document[0].get_pixmap().samples, before)
+                self.assertEqual(document[0].get_drawings(), [])
+        self.assertEqual(source.read_bytes(), original_bytes)
 
     def test_no_word_boxes_or_low_confidence_leave_the_scan_intact(self):
         source, target = self.fixture()

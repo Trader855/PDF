@@ -4,14 +4,19 @@ Correzione della modifica di testo nelle scansioni.
 
 - Lo sfondo OCR conserva il colore reale dei pixel: il bianco non diventa grigio chiaro.
 - Il colore viene ricampionato durante la modifica, anche quando la selezione contiene una stima precedente.
+- Le modifiche native che richiedono un altro font mostrano il nome originale e quello proposto: conferma obbligatoria anche per le sostituzioni multiple. Annullamento ed Esc non salvano modifiche.
+- Corretti gli abbinamenti tra font normali e grassetti; il nome riportato corrisponde alla risorsa realmente usata.
+- I livelli OCR invisibili restano ricercabili ma non vengono trattati come testo nativo visibile: si evita la riscrittura sopra i pixel originali.
 - Correzione visiva conservativa di date e numeri nelle scansioni: fino a 16 cifre della stessa lunghezza riusano campioni compatibili della stessa pagina, senza riscrivere il resto della riga.
 - Verifica OCR del risultato prima di rendere disponibile la copia; campioni mancanti, segmentazione ambigua, scansioni ruotate/sfondi colorati e costi di elaborazione eccessivi sono rifiutati.
+- I riquadri OCR che tagliano l'inchiostro delle cifre sono rifiutati prima di applicare maschere o acquisire campioni, con un margine di controllo bounded.
 - Limite importante: la correzione conservativa usa maschere visive. I pixel originali restano recuperabili sotto la modifica; non è uno strumento di redazione sicura o eliminazione di dati riservati.
 - Il font delle scansioni è dichiarato non identificato. La riscrittura richiede una scelta esplicita, senza attribuire automaticamente Helvetica all'originale.
 - Comic Sans MS, normale e grassetto, è selezionabile se già installato sul dispositivo; nessun font proprietario viene aggiunto alla distribuzione.
 - Anteprima e salvataggio usano lo stesso file del font scelto. Il testo riscritto rimane modificabile dopo il salvataggio e la riapertura.
 - Le righe OCR vengono adattate allo spazio disponibile. Testo troppo lungo per restare leggibile, ritorni a capo e font non utilizzabili sono rifiutati prima di cancellare l'originale.
 - Regressioni sintetiche per bianco, sfondi colorati, font sconosciuti, glifi mancanti, modifiche atomiche e selezione nell'interfaccia Electron.
+- Banner Tomorrow Now più leggibile su Mac e Windows: marchio più grande, motto inglese sempre visibile, contrasto verificato e collegamento al sito.
 
 Limite esplicito: questa release non ricostruisce font completi da una scansione
 come i motori dedicati dei prodotti professionali. La correzione delle cifre non

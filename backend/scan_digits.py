@@ -25,6 +25,7 @@ MAX_CHANGED_DIGITS = 16
 MAX_NUMERIC_WORDS = 128
 MAX_CROP_PIXELS = 3_000_000
 MAX_SHAPE_COMPARISONS = 20_000
+OCR_CROP_MARGIN = 2
 
 
 def numeric_changes(old: str, new: str) -> List[int]:
@@ -49,9 +50,10 @@ def _glyphs(page: fitz.Page, word: Dict[str, Any]) -> List[Optional[Dict[str, An
     if not all(math.isfinite(v) for v in rect) or rect.is_empty or not page.rect.contains(rect):
         return []
     ocr_rect = fitz.Rect(rect)
-    if rect.width > 300 or rect.height > 60 or math.ceil(rect.width * SCALE + 2) * math.ceil(rect.height * SCALE + 2) > MAX_WORD_PIXELS:
+    crop = (rect + (-OCR_CROP_MARGIN, -OCR_CROP_MARGIN, OCR_CROP_MARGIN, OCR_CROP_MARGIN)) & page.rect
+    if rect.width > 300 or rect.height > 60 or math.ceil(crop.width * SCALE + 2) * math.ceil(crop.height * SCALE + 2) > MAX_WORD_PIXELS:
         return []
-    pix = page.get_pixmap(matrix=fitz.Matrix(SCALE, SCALE), clip=rect, colorspace=fitz.csRGB, alpha=False)
+    pix = page.get_pixmap(matrix=fitz.Matrix(SCALE, SCALE), clip=crop, colorspace=fitz.csRGB, alpha=False)
     raw = pix.samples
     colors = Counter(tuple(raw[i:i + 3]) for i in range(0, len(raw), 3))
     # Patterned/colored paper requires a different background reconstruction.
@@ -59,6 +61,15 @@ def _glyphs(page: fitz.Page, word: Dict[str, Any]) -> List[Optional[Dict[str, An
         return []
     rows = [bytearray(sum(raw[(y * pix.width + x) * 3:(y * pix.width + x) * 3 + 3]) < 510
                       for x in range(pix.width)) for y in range(pix.height)]
+    # A tight/incorrect OCR box must not leave the top, bottom or side of the
+    # old glyph behind. Inspect a bounded margin before choosing any donor or
+    # mask, and reject rather than infer missing strokes or expand over ink.
+    if any(rows[0]) or any(rows[-1]) or any(row[0] or row[-1] for row in rows):
+        return []
+    for y, row in enumerate(rows):
+        for x, ink in enumerate(row):
+            if ink and not ocr_rect.contains(fitz.Point((pix.x + x + .5) / SCALE, (pix.y + y + .5) / SCALE)):
+                return []
     counts = [sum(row) for row in rows]
     cutoff = max(2, max(counts) * .02)
     active = [y for y, count in enumerate(counts) if count >= cutoff]
@@ -190,7 +201,7 @@ def prepare_digit_corrections(page: fitz.Page, spans: List[Dict[str, Any]],
             word_rect = fitz.Rect(word["bbox"])
             if not all(math.isfinite(v) for v in word_rect) or word_rect.is_empty:
                 continue
-            crop_pixels += math.ceil(word_rect.width * SCALE + 2) * math.ceil(word_rect.height * SCALE + 2)
+            crop_pixels += math.ceil((word_rect.width + 2 * OCR_CROP_MARGIN) * SCALE + 2) * math.ceil((word_rect.height + 2 * OCR_CROP_MARGIN) * SCALE + 2)
             if numeric_count > MAX_NUMERIC_WORDS or crop_pixels > MAX_CROP_PIXELS:
                 raise ScanPreservationError("La zona OCR è troppo complessa per una correzione conservativa sicura.")
             glyphs = _glyphs(page, word)
