@@ -7,6 +7,7 @@ import unittest
 import zlib
 from pathlib import Path
 from typing import Optional
+from unittest.mock import patch
 
 import fitz
 from fastapi import HTTPException
@@ -187,6 +188,169 @@ class FontCoverageTests(BackendRegressionCase):
             )
         self.assertEqual(raised.exception.status_code, 422)
         self.assertFalse(output.exists())
+
+
+class ScannedTextStyleTests(BackendRegressionCase):
+    def make_scan(self, background=(1, 1, 1)):
+        source = self.output("scan.pdf")
+        with fitz.open() as original:
+            page = original.new_page(width=400, height=250)
+            page.draw_rect(page.rect, color=background, fill=background)
+            page.insert_text((50, 100), "DATA 05/08/2026", fontsize=18, color=(0, 0, 0))
+            span = main.native_text_spans(page)[0]
+            image = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False).tobytes("png")
+        with fitz.open() as scan:
+            page = scan.new_page(width=400, height=250)
+            page.insert_image(page.rect, stream=image)
+            scan.save(source)
+        return source, span
+
+    def test_white_and_colored_backgrounds_use_real_pixels_not_bucket_edges(self):
+        for color in ((1, 1, 1), (.99, .99, .99), (.83, .89, .94), (0, 0, 0)):
+            with self.subTest(color=color):
+                source, span = self.make_scan(color)
+                with fitz.open(source) as doc:
+                    pixmap = main.bounded_pixmap(doc[0])
+                    expected = pixmap.pixel(10, 10)
+                    background, _ = main.sampled_image_colors(pixmap, fitz.Rect(span["bbox"]), doc[0].rect)
+                    self.assertEqual(background, (expected[0] << 16) | (expected[1] << 8) | expected[2])
+
+    def test_inspection_does_not_claim_to_recognize_a_scanned_font(self):
+        source, span = self.make_scan()
+        x0, y0, x1, y1 = span["bbox"]
+        observations = [{"text": span["text"], "bbox": [x0 / 400, 1 - y1 / 250, (x1 - x0) / 400, (y1 - y0) / 250]}]
+        with patch.object(main, "ocr_helper_path", return_value=Path("synthetic-helper")), patch.object(main, "run_ocr_helper", return_value=observations):
+            inspected = main.inspect_text(main.InspectRequest(file_path=str(source)))
+        result = inspected["spans"][0]
+        self.assertEqual(result["source"], "ocr")
+        self.assertFalse(result["font_identified"])
+        self.assertEqual(result["font"], "")
+        self.assertIsNone(result["font_resource"])
+        self.assertEqual(result["background_color"], 0xFFFFFF)
+
+    def test_scan_edit_requires_an_explicit_font_before_touching_pixels(self):
+        source, span = self.make_scan()
+        original = source.read_bytes()
+        output = self.output("unconfirmed.pdf")
+        with self.assertRaises(HTTPException) as raised:
+            main.edit_text(main.EditTextRequest(
+                file_path=str(source), output_path=str(output), bbox=span["bbox"], origin=span["origin"],
+                new_text="DATA 06/08/2026", source="ocr", font="Helvetica", size=18,
+            ))
+        self.assertEqual(raised.exception.status_code, 422)
+        self.assertIn("scansione", raised.exception.detail)
+        self.assertFalse(output.exists())
+        self.assertEqual(source.read_bytes(), original)
+
+    def test_scan_font_name_cannot_silently_fall_back_to_helvetica(self):
+        source, span = self.make_scan()
+        output = self.output("unavailable-font.pdf")
+        with self.assertRaises(HTTPException) as raised:
+            main.edit_text(main.EditTextRequest(
+                file_path=str(source), output_path=str(output), bbox=span["bbox"], origin=span["origin"],
+                new_text="DATA 06/08/2026", source="ocr", font="Font inesistente", size=18,
+                confirm_font_substitution=True,
+            ))
+        self.assertEqual(raised.exception.status_code, 422)
+        self.assertFalse(output.exists())
+
+    def test_confirmed_scan_edit_keeps_white_even_with_stale_gray_request(self):
+        source, span = self.make_scan()
+        output = self.output("white-not-gray.pdf")
+        rect = fitz.Rect(span["bbox"]) + (-3, -3, 3, 3)
+        result = main.edit_text(main.EditTextRequest(
+            file_path=str(source), output_path=str(output), bbox=tuple(rect), origin=span["origin"],
+            new_text="DATA 06/08/2026", source="ocr", font="Liberation Sans", size=18,
+            background_color=0xF0F0F0, confirm_font_substitution=True,
+        ))
+        self.assertEqual(result["font_used"], "Liberation Sans")
+        self.assertIn("DATA 06/08/2026", page_text(output))
+        with fitz.open(output) as doc:
+            pixmap = main.bounded_pixmap(doc[0])
+            self.assertEqual(pixmap.pixel(int(rect.x0 * 2) + 1, int(rect.y0 * 2) + 1), (255, 255, 255))
+        self.assertEqual(page_text(source), "")
+
+    def test_scan_batch_rejects_unconfirmed_font_atomically(self):
+        source, span = self.make_scan()
+        original = source.read_bytes()
+        output = self.output("unconfirmed-batch.pdf")
+        changes = [main.BatchTextChange(
+            page_num=0, bbox=span["bbox"], origin=span["origin"], source="ocr",
+            font="Liberation Sans", size=18,
+        )]
+        with self.assertRaises(HTTPException) as raised:
+            main.batch_edit_text(main.BatchEditTextRequest(
+                file_path=str(source), output_path=str(output), old_text=span["text"],
+                new_text="DATA 06/08/2026", changes=changes,
+            ))
+        self.assertEqual(raised.exception.status_code, 422)
+        self.assertFalse(output.exists())
+        self.assertEqual(source.read_bytes(), original)
+
+    def test_scan_size_fits_the_original_rectangle(self):
+        source, span = self.make_scan()
+        output = self.output("fitted-scan.pdf")
+        text = "DATA AGGIORNATA 06/08/2026"
+        result = main.edit_text(main.EditTextRequest(
+            file_path=str(source), output_path=str(output), bbox=span["bbox"], origin=span["origin"],
+            new_text=text, source="ocr", font="Liberation Sans", size=24, confirm_font_substitution=True,
+        ))
+        self.assertLess(result["size_used"], 24)
+        with fitz.open(output) as doc:
+            changed = main.native_text_spans(doc[0])[0]
+            self.assertEqual(changed["text"], text)
+            self.assertLessEqual(changed["bbox"][2], span["bbox"][2] + .1)
+            self.assertLessEqual(changed["bbox"][3] - changed["bbox"][1], span["bbox"][3] - span["bbox"][1] + .1)
+
+    def test_unreadable_or_multiline_scan_edits_leave_source_intact(self):
+        source, span = self.make_scan()
+        original = source.read_bytes()
+        for text in ("TESTO " * 100, "PRIMA RIGA\nSECONDA RIGA"):
+            with self.subTest(text=text[:20]):
+                output = self.output("unreadable-scan.pdf")
+                with self.assertRaises(HTTPException) as raised:
+                    main.edit_text(main.EditTextRequest(
+                        file_path=str(source), output_path=str(output), bbox=span["bbox"], origin=span["origin"],
+                        new_text=text, source="ocr", font="Liberation Sans", size=18, confirm_font_substitution=True,
+                    ))
+                self.assertEqual(raised.exception.status_code, 422)
+                self.assertFalse(output.exists())
+                self.assertEqual(source.read_bytes(), original)
+
+    def test_confirmed_device_font_with_missing_glyphs_is_not_substituted(self):
+        fonts = main.local_scan_fonts()
+        if not fonts:
+            self.skipTest("Comic Sans MS non installato su questo dispositivo")
+        with fitz.open(self.source) as doc, patch.object(main, "font_file_supports_text", side_effect=lambda path, text: path != fonts[0]["path"]):
+            with self.assertRaises(HTTPException) as raised:
+                main.resolve_text_font(doc[0], fonts[0]["label"], None, "6", allow_original_resource=False, allow_font_substitution=False)
+            self.assertEqual(raised.exception.status_code, 422)
+
+    def test_available_device_fonts_are_embedded_and_serve_the_exact_preview_file(self):
+        fonts = main.local_scan_fonts()
+        if not fonts:
+            self.skipTest("Comic Sans MS non installato su questo dispositivo")
+        for font in fonts:
+            with self.subTest(font=font["label"]):
+                self.assertTrue(main.font_file_supports_text(font["path"], EDITOR_BASELINE))
+                response = main.bundled_font_file(font["id"])
+                self.assertEqual(response.path, font["path"])
+                output = self.output(font["id"] + ".pdf")
+                result = main.add_text(main.AddTextRequest(
+                    file_path=str(self.source), output_path=str(output), origin=(50, 200),
+                    new_text="06/08/2026 àèéìòù €", font=font["label"], size=11,
+                ))
+                self.assertEqual(result["font_used"], font["label"])
+                self.assertIn("06/08/2026 àèéìòù €", page_text(output))
+                inspected = main.inspect_text(main.InspectRequest(file_path=str(output)))
+                span = next(item for item in inspected["spans"] if "06/08/2026" in item["text"])
+                edited = self.output(font["id"] + "-edited.pdf")
+                result = main.edit_text(main.EditTextRequest(
+                    file_path=str(output), output_path=str(edited), bbox=span["bbox"], origin=span["origin"],
+                    new_text="07/08/2026 àèéìòù €", font=span["font"], font_resource=span["font_resource"], size=11,
+                ))
+                self.assertIn(result["font_used"], (font["label"], span["font"]))
+                self.assertIn("07/08/2026 àèéìòù €", page_text(edited))
 
 
 class TextEditingTests(BackendRegressionCase):

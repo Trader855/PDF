@@ -101,6 +101,34 @@ FONT_STYLE_LABELS = {
     "bold_italic": " Bold Italic",
 }
 
+
+def local_scan_fonts() -> List[Dict[str, Any]]:
+    """Font già installati: non vengono copiati o distribuiti con l'app."""
+    if sys.platform == "darwin":
+        directory = Path("/System/Library/Fonts/Supplemental")
+        files = ("Comic Sans MS.ttf", "Comic Sans MS Bold.ttf")
+    elif sys.platform == "win32":
+        directory = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts"
+        files = ("comic.ttf", "comicbd.ttf")
+    else:
+        return []
+    fonts = []
+    for style, filename in zip(("regular", "bold"), files):
+        path = directory / filename
+        if path.is_file():
+            fonts.append({
+                "id": f"device-comic-sans-ms-{style}",
+                "family": "Comic Sans MS",
+                "style": style,
+                "label": "Comic Sans MS" + FONT_STYLE_LABELS[style],
+                "path": path,
+            })
+    return fonts
+
+
+def local_font_match(name: str) -> Optional[Dict[str, Any]]:
+    return next((font for font in local_scan_fonts() if normalize_font_name(font["label"]) == normalize_font_name(name)), None)
+
 @app.middleware("http")
 async def require_local_session_token(request: Request, call_next):
     """Solo il processo principale conosce il token, ricevuto attraverso stdin."""
@@ -150,6 +178,7 @@ class EditTextRequest(BaseModel):
     color: int = 0
     source: str = "native"
     background_color: int = 0xFFFFFF
+    confirm_font_substitution: bool = False
 
 
 class FindRepeatedTextRequest(BaseModel):
@@ -168,6 +197,7 @@ class BatchTextChange(BaseModel):
     color: int = 0
     source: str = "native"
     background_color: int = 0xFFFFFF
+    confirm_font_substitution: bool = False
 
 
 class BatchEditTextRequest(BaseModel):
@@ -504,6 +534,7 @@ def resolve_text_font(
     requested_resource: Optional[str],
     text: str,
     allow_original_resource: bool = True,
+    allow_font_substitution: bool = True,
 ) -> Tuple[str, str]:
     """Sceglie un font solo dopo aver verificato tutti i glifi richiesti."""
     if allow_original_resource:
@@ -513,16 +544,22 @@ def resolve_text_font(
         if resource:
             return resource, requested_name
 
+    local = local_font_match(requested_name)
+    if local and font_file_supports_text(local["path"], text):
+        resource = "MPF" + re.sub(r"[^A-Za-z0-9]", "", local["id"])
+        page.insert_font(fontname=resource, fontfile=str(local["path"]))
+        return resource, local["label"]
+
     bundled = register_bundled_font(
         page,
         requested_name,
-        default_family="Liberation Sans",
+        default_family="Liberation Sans" if allow_font_substitution else None,
         text=text,
     )
     if bundled:
         return bundled
 
-    if base14_font_supports_text("helv", text):
+    if allow_font_substitution and base14_font_supports_text("helv", text):
         return "helv", "Helvetica"
 
     raise HTTPException(
@@ -532,6 +569,39 @@ def resolve_text_font(
             "Il testo originale non è stato modificato."
         ),
     )
+
+
+def require_scan_font_choice(font: str, confirmed: bool, new_text: str) -> None:
+    if not new_text:
+        return
+    if not confirmed:
+        raise HTTPException(status_code=422, detail=(
+            "Il testo originale è una scansione: il font non è incorporato nel PDF. "
+            "Seleziona un carattere disponibile per riscriverlo; lo stile potrebbe differire. "
+            "Il documento originale non è stato modificato."
+        ))
+    if not (local_font_match(font) or bundled_font_match(font)):
+        raise HTTPException(status_code=422, detail="Seleziona un carattere disponibile nel catalogo prima di riscrivere la scansione.")
+
+
+def fitted_scan_font_size(page: fitz.Page, resource: str, text: str, size: float, rect: fitz.Rect, origin: Tuple[float, float]) -> float:
+    """La dimensione OCR è una stima: non lasciare che la riga esca dall'area."""
+    if len(text.splitlines()) > 1:
+        raise HTTPException(status_code=422, detail="Modifica una riga scansionata alla volta, senza aggiungere ritorni a capo.")
+    if not page.rect.contains(fitz.Point(origin)):
+        raise HTTPException(status_code=422, detail="La posizione del testo è fuori dalla pagina.")
+    available_width = min(rect.width, page.rect.x1 - origin[0])
+    font_info = next(font for font in page.get_fonts(full=True) if font[4] == resource)
+    buffer = page.parent.extract_font(font_info[0])[3]
+    font = fitz.Font(fontbuffer=buffer)
+    width = font.text_length(text, fontsize=size)
+    available_height = min(rect.height, page.rect.y1 - origin[1])
+    fitted = min(size, available_height / max(.5, font.ascender - font.descender))
+    if width > 0:
+        fitted = min(fitted, size * available_width / width)
+    if fitted < 5 or available_width <= 0:
+        raise HTTPException(status_code=422, detail="Il nuovo testo non entra nel riquadro della scansione a una dimensione leggibile. Accorcialo oppure usa il documento sorgente.")
+    return fitted
 
 
 def validate_document(file_path: str, page_num: int) -> Tuple[Path, fitz.Document]:
@@ -652,8 +722,11 @@ def list_bundled_fonts():
                     "style": selected["style"],
                     "label": selected["label"],
                     "aliases": list(family["aliases"]),
+                    "source": "bundled",
                 }
             )
+    for font in local_scan_fonts():
+        fonts.append({**{key: value for key, value in font.items() if key != "path"}, "aliases": [], "source": "device"})
     return {"fonts": fonts}
 
 
@@ -668,6 +741,8 @@ def bundled_font_file(font_id: str):
         ),
         None,
     )
+    if not selected:
+        selected = next((font for font in local_scan_fonts() if font["id"] == font_id), None)
     if not selected:
         raise HTTPException(status_code=404, detail="Font non disponibile")
     return FileResponse(selected["path"], media_type="font/ttf", filename=selected["path"].name)
@@ -1031,19 +1106,26 @@ def sampled_image_colors(pixmap: fitz.Pixmap, rect: fitz.Rect, page_rect: fitz.R
     samples = pixmap.samples
     components = pixmap.n
     colors: Counter[Tuple[int, int, int]] = Counter()
+    exact_colors: Dict[Tuple[int, int, int], Counter] = {}
     for y in range(y0, y1, step_y):
         for x in range(x0, x1, step_x):
             offset = (y * pixmap.width + x) * components
             red, green, blue = samples[offset:offset + 3]
-            colors[(red // 16 * 16, green // 16 * 16, blue // 16 * 16)] += 1
+            bucket = (red // 16 * 16, green // 16 * 16, blue // 16 * 16)
+            colors[bucket] += 1
+            exact_colors.setdefault(bucket, Counter())[(red, green, blue)] += 1
     if not colors:
         return 0xFFFFFF, 0x000000
-    background, background_count = colors.most_common(1)[0]
+    background_bucket, background_count = colors.most_common(1)[0]
+    background = exact_colors[background_bucket].most_common(1)[0][0]
     candidates = [item for item in colors.most_common(32) if item[1] >= max(2, background_count // 250)]
-    foreground = max(
+    foreground_bucket = max(
         candidates,
         key=lambda item: sum((item[0][channel] - background[channel]) ** 2 for channel in range(3)),
     )[0]
+    # I bucket servono solo per aggregare il rumore, non sono colori da disegnare:
+    # 255 (bianco) appartiene al bucket 240, che produrrebbe una fascia grigia.
+    foreground = exact_colors[foreground_bucket].most_common(1)[0][0]
     distance = sum((foreground[channel] - background[channel]) ** 2 for channel in range(3)) ** 0.5
     if distance < 70:
         foreground = (0, 0, 0) if sum(background) > 380 else (255, 255, 255)
@@ -1110,8 +1192,9 @@ def ocr_spans_inside_images(source_path: Path, page_num: int, page: fitz.Page, n
             "text": text,
             "bbox": list(rect),
             "origin": [rect.x0, rect.y1 - max(0.8, rect.height * 0.12)],
-            "font": "Helvetica",
-            "font_resource": "helv",
+            "font": "",
+            "font_resource": None,
+            "font_identified": False,
             "size": font_size,
             "color": foreground,
             "background_color": background,
@@ -1524,6 +1607,10 @@ def batch_edit_text(req: BatchEditTextRequest):
 
             font_resource = None
             font_used = change.font
+            if change.source == "ocr":
+                require_scan_font_choice(change.font, change.confirm_font_substitution, req.new_text)
+                background, _ = sampled_image_colors(bounded_pixmap(page), rect, page.rect)
+                change = change.model_copy(update={"background_color": background})
             if req.new_text:
                 font_resource, font_used = resolve_text_font(
                     page,
@@ -1531,7 +1618,10 @@ def batch_edit_text(req: BatchEditTextRequest):
                     change.font_resource,
                     req.new_text,
                     allow_original_resource=change.source != "ocr",
+                    allow_font_substitution=change.source != "ocr",
                 )
+                if change.source == "ocr":
+                    change = change.model_copy(update={"size": fitted_scan_font_size(page, font_resource, req.new_text, change.size, rect, change.origin)})
             prepared_by_page.setdefault(change.page_num, []).append(
                 (change, font_resource, font_used)
             )
@@ -1559,6 +1649,7 @@ def batch_edit_text(req: BatchEditTextRequest):
                         font_resource, font_used = resolve_text_font(
                             page, change.font, font_resource, req.new_text,
                             allow_original_resource=change.source != "ocr",
+                            allow_font_substitution=change.source != "ocr",
                         )
                         page.insert_text(
                             fitz.Point(change.origin),
@@ -1609,8 +1700,13 @@ def edit_text(req: EditTextRequest):
             raise HTTPException(status_code=400, detail="Coordinate del testo non valide")
 
         is_ocr_text = req.source == "ocr"
+        background_color = req.background_color
+        if is_ocr_text:
+            require_scan_font_choice(req.font, req.confirm_font_substitution, req.new_text)
+            background_color, _ = sampled_image_colors(bounded_pixmap(page), rect, page.rect)
         font_resource = None
         font_used = req.font
+        size_used = req.size
         if req.new_text:
             # Preflight prima della redazione: un glifo mancante non deve mai
             # cancellare il contenuto originale lasciando il riquadro vuoto.
@@ -1620,13 +1716,16 @@ def edit_text(req: EditTextRequest):
                 req.font_resource,
                 req.new_text,
                 allow_original_resource=not is_ocr_text,
+                allow_font_substitution=not is_ocr_text,
             )
+            if is_ocr_text:
+                size_used = fitted_scan_font_size(page, font_resource, req.new_text, req.size, rect, req.origin)
 
         # Per testo nativo elimina solo i glifi. Per testo dentro un'immagine
         # ricostruisce invece i pixel della piccola area usando lo sfondo stimato.
         page.add_redact_annot(
             rect,
-            fill=int_to_pdf_color(req.background_color) if is_ocr_text else None,
+            fill=int_to_pdf_color(background_color) if is_ocr_text else None,
             cross_out=False,
         )
         page.apply_redactions(images=2 if is_ocr_text else 0, graphics=0, text=0)
@@ -1636,12 +1735,13 @@ def edit_text(req: EditTextRequest):
                 font_resource, font_used = resolve_text_font(
                     page, req.font, font_resource, req.new_text,
                     allow_original_resource=not is_ocr_text,
+                    allow_font_substitution=not is_ocr_text,
                 )
                 page.insert_text(
                     fitz.Point(req.origin),
                     req.new_text,
                     fontname=font_resource,
-                    fontsize=req.size,
+                    fontsize=size_used,
                     color=fitz.sRGB_to_pdf(req.color),
                     rotate=upright_text_rotation(page),
                     overlay=True,
@@ -1661,6 +1761,7 @@ def edit_text(req: EditTextRequest):
             "output_path": str(output_path),
             "font_used": font_used,
             "font_resource": font_resource,
+            "size_used": size_used,
         }
     except HTTPException:
         raise

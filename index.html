@@ -1089,6 +1089,7 @@
     .font-picker-option:hover,
     .font-picker-option.is-selected { background: var(--accent-soft); color: var(--accent-strong); }
     .font-picker-empty { padding: 8px; color: #858c97; font-size: 11px; }
+    .scan-font-notice { margin: 12px 0 0; padding: 10px; border: 1px solid #f3d59a; border-radius: 8px; background: #fff9ed; color: #72521c; font-size: 11px; line-height: 1.5; }
 
     .inspector-footer {
       position: sticky;
@@ -1478,6 +1479,7 @@
                 <input id="selected-size" type="number" min="1" step="0.1" disabled>
               </div>
             </div>
+            <p id="scan-font-notice" class="scan-font-notice hidden" role="status">Il testo è un'immagine: il PDF non contiene il font originale. Scegli un carattere dal catalogo per riscriverlo e controlla l'anteprima. Lo stile e la dimensione potrebbero differire dalla scansione. Per conservarli esattamente serve il documento sorgente, ad esempio Word.</p>
           </div>
           <div id="media-properties" class="property-card hidden">
             <p id="media-description" style="margin:0;color:#68707c;font-size:12px;line-height:1.55">Trascina l'elemento sulla pagina e usa il punto blu per ridimensionarlo.</p>

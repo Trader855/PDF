@@ -19,7 +19,7 @@ Scarica sempre la versione più recente dalla pagina [Releases](https://github.c
 Accanto a ogni pacchetto è indicato il tag del relativo
 [codice sorgente](https://github.com/Trader855/PDF).
 
-## Funzioni principali della versione 1.7.3
+## Funzioni principali della versione 1.7.4
 
 - sblocco dei PDF protetti quando si conosce la password;
 - riordino, inserimento, rotazione, duplicazione, estrazione ed eliminazione delle pagine;
@@ -48,6 +48,19 @@ Accanto a ogni pacchetto è indicato il tag del relativo
   tramite pipe privata e conservato solo nel processo principale;
 - letture e salvataggi limitati ai documenti autorizzati tramite selezione
   file e al percorso confermato nel dialogo nativo di salvataggio.
+
+### Testo dentro le scansioni
+
+L'OCR riconosce il contenuto, non il carattere originale. Un'immagine scansionata
+non contiene una risorsa font da riutilizzare: l'app richiede quindi di scegliere
+un font dal catalogo prima di riscriverla. L'anteprima usa lo stesso file font del
+salvataggio; stile e dimensione possono comunque differire dall'immagine originale.
+Per conservarli esattamente è preferibile modificare il documento sorgente.
+
+Comic Sans MS, normale e grassetto, è disponibile nel catalogo quando già installato
+su macOS o Windows; non è incluso nei pacchetti distribuiti. La riga riscritta viene
+adattata alla larghezza del riquadro e lo sfondo campionato mantiene i colori reali,
+senza trasformare il bianco in grigio.
 
 ## Sviluppo locale
 

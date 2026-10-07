@@ -30,7 +30,14 @@ with tempfile.TemporaryDirectory(prefix="pdf-editor-packaged-") as temp_root:
         helper = resources / "backend" / "windows_pdf_ocr.ps1"
         if helper.is_file():
             shutil.copy2(helper, test_backend_directory / helper.name)
+    elif sys.platform == "darwin":
+        helper = resources / "backend" / "mac-pdf-ocr"
+        if not helper.is_file():
+            raise SystemExit("OCR helper missing from the packaged application")
+        shutil.copy2(helper, test_backend_directory / helper.name)
     env = os.environ.copy()
     env["QA_BACKEND_EXECUTABLE"] = str(backend)
     env["QA_FONTS_DIRECTORY"] = str(test_resources / "fonts")
+    if sys.platform == "darwin":
+        env["QA_REQUIRE_SCAN_STYLE"] = "1"
     subprocess.run(["node", "--test", "tests/security.test.cjs"], cwd=root, env=env, check=True)

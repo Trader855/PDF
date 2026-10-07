@@ -71,7 +71,7 @@ test('Actual backend: private pipe, ephemeral port, auth, fonts, passwords, roun
     assert.equal((await fetch(session.base + '/health')).status, 401);
     assert.equal((await fetch(session.base + '/health', { method: 'OPTIONS' })).status, 401);
     assert.equal((await fetch(session.base + '/health', { headers: { Authorization: 'Bearer é' } })).status, 401);
-    assert.equal((await session.request('/fonts')).fonts.length, 20);
+    assert.equal((await session.request('/fonts')).fonts.filter(font => font.source === 'bundled').length, 20);
     const fonts = await session.request('/fonts');
     assert.ok((await session.request(`/font-file/${fonts.fonts[0].id}`)).length > 1000);
     const source = session.files.register(path.join(temp, 'source.pdf'));
@@ -90,6 +90,26 @@ test('Actual backend: private pipe, ephemeral port, auth, fonts, passwords, roun
     const added = await session.request('/add-text', { file_path: source, new_text: '06/09/2026 àèéìòù €', origin: [72, 130], font: 'FranklinGothic-Book', size: 12 });
     const spans = (await session.request('/inspect-text', { file_path: added.output_path, page_num: 0 })).spans;
     assert.ok(spans.some((span) => span.text.includes('06/09/2026 àèéìòù €')));
+    if (process.env.QA_REQUIRE_SCAN_STYLE === '1') {
+      execFileSync(python, ['-c',
+        'import fitz,sys; d=fitz.open(); p=d.new_page(width=595,height=400); p.insert_text((72,140),"SCANSIONE 05/08/2026",fontsize=32); png=p.get_pixmap(matrix=fitz.Matrix(2,2),alpha=False).tobytes("png"); d.close(); d=fitz.open(); p=d.new_page(width=595,height=400); p.insert_image(p.rect,stream=png); d.save(sys.argv[1]); d.close()', path.join(temp, 'scan.pdf')]);
+      const scan = session.files.register(path.join(temp, 'scan.pdf'));
+      const inspected = await session.request('/inspect-text', { file_path: scan, page_num: 0 });
+      const scannedSpan = inspected.spans.find(span => span.text === 'SCANSIONE 05/08/2026');
+      assert.ok(scannedSpan, 'Packaged OCR must recognize the synthetic line');
+      assert.equal(scannedSpan.source, 'ocr');
+      assert.equal(scannedSpan.font_identified, false);
+      assert.equal(scannedSpan.font, '');
+      assert.equal(scannedSpan.background_color, 0xFFFFFF);
+      const edit = { ...scannedSpan, file_path: scan, page_num: 0, new_text: 'SCANSIONE 06/08/2026', font: 'Liberation Sans', background_color: 0xF0F0F0 };
+      await assert.rejects(session.request('/edit-text', edit), /scansione/);
+      const changed = await session.request('/edit-text', { ...edit, confirm_font_substitution: true });
+      assert.equal(changed.font_used, 'Liberation Sans');
+      assert.ok(changed.size_used >= 5);
+      const native = (await session.request('/inspect-text', { file_path: changed.output_path, page_num: 0 })).spans;
+      assert.ok(native.some(span => span.text === edit.new_text && span.source !== 'ocr'));
+      execFileSync(python, ['-c', 'import fitz,sys; d=fitz.open(sys.argv[1]); fills=[item["fill"] for item in d[0].get_drawings() if item["fill"]]; assert (1.0,1.0,1.0) in fills, fills; assert (240/255,240/255,240/255) not in fills; d.close()', changed.output_path]);
+    }
     session.prune([source, added.output_path]);
     assert.equal(fs.existsSync(unlocked.output_path), false);
     assert.equal(fs.existsSync(merged.output_path), false);

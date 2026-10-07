@@ -129,6 +129,7 @@ const ui = {
   selectionHelp: document.querySelector("#selection-help"),
   selectedText: document.querySelector("#selected-text"),
   selectedFont: document.querySelector("#selected-font"),
+  scanFontNotice: document.querySelector("#scan-font-notice"),
   fontPickerToggle: document.querySelector("#font-picker-toggle"),
   fontOptions: document.querySelector("#font-options"),
   selectedSize: document.querySelector("#selected-size"),
@@ -539,10 +540,27 @@ function closeFontPicker() {
 }
 
 async function previewSelectedFont() {
-  if (!state.inlineEditor?.content) return;
   const requestedName = ui.selectedFont.value.trim();
+  if (state.selectedSpan?.source === "ocr") {
+    setEditorEnabled(true);
+    if (!state.fontCatalog.has(requestedName)) {
+      if (state.inlineEditor) {
+        ui.selectedText.value = currentInlineText();
+        state.inlineEditor.wrapper.remove();
+        state.inlineEditor = null;
+      }
+      return;
+    }
+    if (!state.inlineEditor) createInlineTextEditor({
+      kind: "edit", origin: state.pendingEditOrigin,
+      span: { ...state.selectedSpan, font: requestedName }, text: ui.selectedText.value,
+    });
+    ui.selectionHelp.textContent = `Scansione · riscrittura con ${requestedName}. Dimensione stimata: controlla l'anteprima.`;
+  }
+  if (!state.inlineEditor?.content) return;
   if (!requestedName) return;
 
+  const editor = state.inlineEditor;
   const catalogFont = state.fontCatalog.get(requestedName);
   if (catalogFont) {
     let previewFamily = state.loadedPreviewFonts.get(catalogFont.id);
@@ -551,11 +569,13 @@ async function previewSelectedFont() {
       const fontFace = new FontFace(
         previewFamily,
         new Uint8Array(await appBridge.request(`/font-file/${catalogFont.id}`)),
+        { weight: /bold/.test(catalogFont.style) ? "700" : "400", style: /italic/.test(catalogFont.style) ? "italic" : "normal" },
       );
       await fontFace.load();
       document.fonts.add(fontFace);
       state.loadedPreviewFonts.set(catalogFont.id, previewFamily);
     }
+    if (state.inlineEditor !== editor || ui.selectedFont.value.trim() !== requestedName) return;
     state.inlineEditor.content.style.fontFamily = `"${previewFamily}", sans-serif`;
   } else {
     const safeName = requestedName.replaceAll('"', "");
@@ -563,6 +583,33 @@ async function previewSelectedFont() {
   }
   state.inlineEditor.content.style.fontWeight = /bold/i.test(requestedName) ? "700" : "400";
   state.inlineEditor.content.style.fontStyle = /italic|oblique/i.test(requestedName) ? "italic" : "normal";
+  fitScannedTextPreview();
+}
+
+function fitScannedTextPreview() {
+  const editor = state.inlineEditor;
+  const span = state.selectedSpan;
+  if (span?.source !== "ocr" || !editor?.content) return;
+  const size = Number(ui.selectedSize.value) || Number(span.size);
+  const context = document.createElement("canvas").getContext("2d");
+  const style = editor.content.style;
+  context.font = `${style.fontStyle || "normal"} ${style.fontWeight || "400"} ${size * state.pageScale}px ${style.fontFamily}`;
+  const metrics = currentInlineText().split("\n").map((line) => context.measureText(line));
+  const width = Math.max(...metrics.map((line) => line.width));
+  const height = Math.max(...metrics.map((line) => line.fontBoundingBoxAscent + line.fontBoundingBoxDescent));
+  const available = (span.bbox[2] - span.bbox[0]) * state.pageScale;
+  const availableHeight = (span.bbox[3] - span.bbox[1]) * state.pageScale;
+  let fitted = width > 0 ? Math.min(size, size * available / width) : size;
+  if (height > 0) fitted = Math.min(fitted, size * availableHeight / height);
+  editor.content.style.fontSize = `${Math.max(5, fitted) * state.pageScale}px`;
+  editor.baselineOffset = Math.max(5, fitted) * editor.ascender * state.pageScale;
+  const [, originTop] = backendPointToCss(state.pendingEditOrigin);
+  editor.wrapper.style.top = `${originTop - editor.baselineOffset}px`;
+}
+
+function deviceFontForPdfName(name) {
+  const normalize = (value) => String(value || "").replace(/^[A-Z]{6}\+/, "").replace(/[^a-z0-9]/gi, "").toLowerCase();
+  return [...state.fontCatalog.values()].find((font) => font.source === "device" && normalize(font.label) === normalize(name));
 }
 
 function updateNavigation() {
@@ -654,6 +701,7 @@ function normalizedEditorText(value) {
 function updateCoherentButtonState() {
   const isEditableSelection = Boolean(
     state.selectedSpan
+    && state.selectedSpan.source !== "ocr"
     && state.activeTool === "edit"
     && !ui.selectedText.disabled,
   );
@@ -674,7 +722,8 @@ function setEditorEnabled(enabled) {
   ui.fontPickerToggle.disabled = !enabled;
   if (!enabled) closeFontPicker();
   ui.selectedSize.disabled = !enabled;
-  ui.applyButton.disabled = !enabled || state.applyingEdit;
+  ui.applyButton.disabled = !enabled || state.applyingEdit
+    || (state.selectedSpan?.source === "ocr" && !state.fontCatalog.has(ui.selectedFont.value.trim()));
   updateCoherentButtonState();
 }
 
@@ -720,6 +769,8 @@ function clearSelection() {
   });
   ui.selectedText.value = "";
   ui.selectedFont.value = "";
+  ui.selectedFont.placeholder = "";
+  ui.scanFontNotice.classList.add("hidden");
   ui.selectedSize.value = "";
   ui.selectionHelp.textContent = state.activeTool === "select"
     ? "Gli oggetti aggiunti in questa sessione sono evidenziati in arancione: clicca o trascina per spostarli."
@@ -745,19 +796,26 @@ function selectSpan(span, box, objectId = box?.dataset.objectId || null) {
   state.pendingEditOrigin = Array.isArray(span.origin) ? [...span.origin] : null;
   state.pendingAddition = null;
   ui.selectedText.value = span.text || "";
-  ui.selectedFont.value = span.font || "";
-  ui.selectedSize.value = Number.isFinite(Number(span.size)) ? Number(span.size) : "";
+  ui.selectedFont.value = span.source === "ocr" ? "" : deviceFontForPdfName(span.font)?.label || span.font || "";
+  ui.selectedFont.placeholder = span.source === "ocr" ? "Scegli un carattere…" : "";
+  ui.scanFontNotice.classList.toggle("hidden", span.source !== "ocr");
+  ui.selectedSize.value = Number.isFinite(Number(span.size)) ? Math.round(Number(span.size) * 100) / 100 : "";
   ui.selectionHelp.textContent = span.source === "ocr"
-    ? `Pagina ${state.pageNumber} · testo riconosciuto dentro un'immagine`
+    ? `Pagina ${state.pageNumber} · scansione: font originale non rilevabile.`
     : `Pagina ${state.pageNumber} · font originale ${span.font || "non identificato"}`;
   ui.applyButton.textContent = "Applica Modifica";
   setEditorEnabled(true);
-  createInlineTextEditor({
+  if (state.inlineEditor?.wrapper) state.inlineEditor.wrapper.remove();
+  state.inlineEditor = null;
+  if (span.source !== "ocr") createInlineTextEditor({
     kind: "edit",
     origin: state.pendingEditOrigin,
     span,
     text: span.text || "",
   });
+  if (span.source !== "ocr" && state.fontCatalog.has(ui.selectedFont.value)) {
+    previewSelectedFont().catch((error) => console.warn("Anteprima font non disponibile:", error));
+  }
   updateCoherentButtonState();
 }
 
@@ -1447,7 +1505,8 @@ async function applySelectedEdit({ movementOnly = false } = {}) {
         size: newSize,
         color: Number(span.color) || 0,
         source: span.source || "native",
-        background_color: Number(span.background_color) || 0xFFFFFF,
+        confirm_font_substitution: span.source === "ocr" && state.fontCatalog.has(selectedFont),
+        background_color: Number.isFinite(Number(span.background_color)) ? Number(span.background_color) : 0xFFFFFF,
       }),
     });
 
@@ -1473,7 +1532,7 @@ async function applySelectedEdit({ movementOnly = false } = {}) {
     ui.saveButton.disabled = false;
     setStatus(movementOnly
       ? `Testo spostato e salvato con ${result.font_used}.`
-      : `${span.source === "ocr" ? "Testo nell'immagine" : "Modifica"} applicato con ${result.font_used}. Ora puoi salvare la nuova versione.`);
+      : `${span.source === "ocr" ? "Testo nell'immagine" : "Modifica"} applicato con ${result.font_used}.${result.size_used < newSize - 0.05 ? ` Dimensione adattata al riquadro: ${result.size_used.toFixed(1)} pt.` : ""} Ora puoi salvare la nuova versione.`);
   } finally {
     state.applyingEdit = false;
     if (state.selectedSpan) setEditorEnabled(true);
@@ -1763,6 +1822,7 @@ function createInlineTextEditor({ kind, origin, span, text }) {
 
   content.addEventListener("input", () => {
     ui.selectedText.value = content.textContent;
+    fitScannedTextPreview();
     updateCoherentButtonState();
   });
   content.addEventListener("keydown", (event) => {
@@ -1807,7 +1867,7 @@ function distanceFromSpan(point, span) {
 
 function nearestTextStyle(point) {
   return state.currentSpans
-    .filter((span) => span.text)
+    .filter((span) => span.text && span.source !== "ocr")
     .reduce((nearest, span) => {
       const distance = distanceFromSpan(point, span);
       return !nearest || distance < nearest.distance ? { span, distance } : nearest;
@@ -2831,6 +2891,7 @@ ui.selectedText.addEventListener("input", () => {
   if (state.inlineEditor?.content && state.inlineEditor.content.textContent !== ui.selectedText.value) {
     state.inlineEditor.content.textContent = ui.selectedText.value;
   }
+  fitScannedTextPreview();
   updateCoherentButtonState();
 });
 
@@ -2920,6 +2981,7 @@ ui.selectedSize.addEventListener("input", () => {
   state.inlineEditor.baselineOffset = size * state.inlineEditor.ascender * state.pageScale;
   const [, originTop] = backendPointToCss(origin);
   state.inlineEditor.wrapper.style.top = `${originTop - state.inlineEditor.baselineOffset}px`;
+  fitScannedTextPreview();
 });
 
 ui.previousButton.addEventListener("click", () => {
