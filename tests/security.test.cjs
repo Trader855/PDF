@@ -139,8 +139,8 @@ test('Font consent crosses IPC without granting an output until confirmation', {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'pdf-font-consent-ipc-'));
   let session;
   try {
-    execFileSync(python, ['-c',
-      'import sys; from pathlib import Path; sys.path.insert(0,"tests"); from test_font_edit_safety import FontEditSafetyTests; t=FontEditSafetyTests(); t.root=Path(sys.argv[1]); t.native_fixture(pages=2)', temp], { cwd: root });
+    const hiddenSpan = JSON.parse(execFileSync(python, ['-c',
+      'import sys,json; from pathlib import Path; sys.path.insert(0,"tests"); from test_font_edit_safety import FontEditSafetyTests; t=FontEditSafetyTests(); t.root=Path(sys.argv[1]); t.native_fixture(pages=2); _,span,_=t.scan_fixture(); print(json.dumps(span))', temp], { cwd: root, encoding: 'utf8' }));
     const packaged = process.env.QA_BACKEND_EXECUTABLE;
     session = new BackendSession({ executable: packaged || python,
       args: packaged ? [] : [path.join(root, 'backend/main.py')],
@@ -168,6 +168,16 @@ test('Font consent crosses IPC without granting an output until confirmation', {
     assert.equal(isDirectChild(session.directory, result.output_path), true);
     assert.ok((await session.request('/inspect-text', { file_path: result.output_path })).spans
       .some(item => item.text === edit.new_text));
+    const hidden = session.files.register(path.join(temp, 'searchable-scan.pdf'));
+    const hiddenInspection = (await session.request('/inspect-text', { file_path: hidden })).spans;
+    assert.ok(hiddenInspection.every(item => item.source === 'ocr'), 'Hidden OCR must never be exposed as native');
+    if (process.env.QA_REQUIRE_SCAN_STYLE === '1') {
+      assert.ok(hiddenInspection.some(item => item.text === hiddenSpan.text && item.font === ''),
+        'The compiled OCR helper must inspect the visible scan, without claiming an original font');
+    }
+    const outputsBefore = fs.readdirSync(session.directory).filter(name => name.endsWith('.pdf')).sort();
+    await assert.rejects(session.request('/edit-text', { ...hiddenSpan, file_path: hidden, new_text: 'DATA 06/08/2026' }), /OCR invisibile/);
+    assert.deepEqual(fs.readdirSync(session.directory).filter(name => name.endsWith('.pdf')).sort(), outputsBefore);
   } finally {
     if (session) await session.stop();
     fs.rmSync(temp, { recursive: true, force: true });
