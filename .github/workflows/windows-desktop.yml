@@ -21,6 +21,7 @@ jobs:
     env:
       CSC_IDENTITY_AUTO_DISCOVERY: "false"
       PYTHONUTF8: "1"
+      QA_DIAGNOSTICS_DIRECTORY: ${{ runner.temp }}/pdf-ui-diagnostics
 
     steps:
       - name: Checkout exact source
@@ -78,3 +79,12 @@ jobs:
           path: |
             release/Tomorrow-Now-PDF-Editor-*-Windows-x64.exe
             release/Tomorrow-Now-PDF-Editor-*-Windows-x64.zip
+
+      - name: Preserve synthetic UI failure screenshot
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-synthetic-ui-failure
+          if-no-files-found: ignore
+          retention-days: 7
+          path: ${{ runner.temp }}/pdf-ui-diagnostics/pdf-security-ui-failure.png

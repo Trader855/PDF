@@ -221,10 +221,20 @@ const root = path.resolve(__dirname, '..');
     console.log('Electron UI QA OK: open, edit, font preview, page 25, bounded thumbnails, password-protected insertion, IPC boundary.');
   } catch (error) {
     console.log('QA status:', await page.locator('#status').textContent());
+    console.log('QA synthetic overlay snapshot:', JSON.stringify(await page.evaluate(() => ({
+      page: document.querySelector('#page-indicator')?.textContent,
+      editButton: document.querySelector('#edit-mode')?.className,
+      objectButton: document.querySelector('#select-object-mode')?.className,
+      boxes: [...document.querySelectorAll('.text-box')].map(box => ({ title: box.title,
+        width: box.getBoundingClientRect().width, height: box.getBoundingClientRect().height,
+        display: getComputedStyle(box).display })),
+    }))));
     // This isolated profile only processes the generated fixtures above.
     const backendLog = path.join(temp, 'profile/logs/backend.log');
     if (fs.existsSync(backendLog)) console.log('QA backend diagnostics:', fs.readFileSync(backendLog, 'utf8').slice(-8000));
-    await page.screenshot({ path: path.join(os.tmpdir(), 'pdf-security-ui-failure.png') });
+    const diagnosticsDirectory = process.env.QA_DIAGNOSTICS_DIRECTORY || os.tmpdir();
+    fs.mkdirSync(diagnosticsDirectory, { recursive: true });
+    await page.screenshot({ path: path.join(diagnosticsDirectory, 'pdf-security-ui-failure.png') });
     throw error;
   } finally {
     console.log('QA: closing Electron');
