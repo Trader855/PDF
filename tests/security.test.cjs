@@ -103,6 +103,12 @@ test('Actual backend: private pipe, ephemeral port, auth, fonts, passwords, roun
       assert.equal(scannedSpan.background_color, 0xFFFFFF);
       const edit = { ...scannedSpan, file_path: scan, page_num: 0, new_text: 'SCANSIONE 06/08/2026', font: 'Liberation Sans', background_color: 0xF0F0F0 };
       await assert.rejects(session.request('/edit-text', edit), /scansione/);
+      const preserved = await session.request('/edit-text', { ...edit, original_text: scannedSpan.text, preserve_scan_digits: true });
+      assert.equal(preserved.edit_mode, 'scan_digits');
+      assert.equal(preserved.changed_digits, 1);
+      const preservedSpans = (await session.request('/inspect-text', { file_path: preserved.output_path, page_num: 0 })).spans;
+      assert.ok(preservedSpans.some(span => span.text === edit.new_text && span.source === 'ocr'));
+      assert.ok(!preservedSpans.some(span => span.source === 'native'));
       const changed = await session.request('/edit-text', { ...edit, confirm_font_substitution: true });
       assert.equal(changed.font_used, 'Liberation Sans');
       assert.ok(changed.size_used >= 5);

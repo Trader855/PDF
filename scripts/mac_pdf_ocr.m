@@ -37,10 +37,23 @@ int main(int argc, const char *argv[]) {
             VNRecognizedText *candidate = [[observation topCandidates:1] firstObject];
             if (!candidate) continue;
             CGRect box = observation.boundingBox;
+            NSMutableArray *words = [NSMutableArray array];
+            NSRegularExpression *pattern = [NSRegularExpression regularExpressionWithPattern:@"\\S+" options:0 error:nil];
+            for (NSTextCheckingResult *match in [pattern matchesInString:candidate.string options:0 range:NSMakeRange(0, candidate.string.length)]) {
+                NSError *wordError = nil;
+                VNRectangleObservation *word = [candidate boundingBoxForRange:match.range error:&wordError];
+                if (!word || wordError || CGRectIsEmpty(word.boundingBox)) continue;
+                CGRect wordBox = word.boundingBox;
+                [words addObject:@{
+                    @"text": [candidate.string substringWithRange:match.range],
+                    @"bbox": @[@(wordBox.origin.x), @(wordBox.origin.y), @(wordBox.size.width), @(wordBox.size.height)]
+                }];
+            }
             [lines addObject:@{
                 @"text": candidate.string,
                 @"confidence": @(candidate.confidence),
-                @"bbox": @[@(box.origin.x), @(box.origin.y), @(box.size.width), @(box.size.height)]
+                @"bbox": @[@(box.origin.x), @(box.origin.y), @(box.size.width), @(box.size.height)],
+                @"words": words
             }];
         }
 

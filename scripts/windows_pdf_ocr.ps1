@@ -116,10 +116,22 @@ try {
                 [double](($right - $left) / $pixelWidth)
                 [double](($bottom - $top) / $pixelHeight)
             )
+            words = @($words | ForEach-Object {
+                $box = $_.BoundingRect
+                [PSCustomObject]@{
+                    text = [string]$_.Text
+                    bbox = @(
+                        [double]($box.X / $pixelWidth)
+                        [double](1.0 - (($box.Y + $box.Height) / $pixelHeight))
+                        [double]($box.Width / $pixelWidth)
+                        [double]($box.Height / $pixelHeight)
+                    )
+                }
+            })
         }
     }
 
-    ConvertTo-Json -InputObject @($observations) -Compress -Depth 4
+    ConvertTo-Json -InputObject @($observations) -Compress -Depth 6
     if ($null -ne $bitmap) { $bitmap.Dispose() }
     if ($null -ne $stream) { $stream.Dispose() }
 } catch {

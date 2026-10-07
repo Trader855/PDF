@@ -721,10 +721,28 @@ function setEditorEnabled(enabled) {
   ui.selectedFont.disabled = !enabled;
   ui.fontPickerToggle.disabled = !enabled;
   if (!enabled) closeFontPicker();
-  ui.selectedSize.disabled = !enabled;
+  ui.selectedSize.disabled = !enabled || preservingScanDigits();
   ui.applyButton.disabled = !enabled || state.applyingEdit
-    || (state.selectedSpan?.source === "ocr" && !state.fontCatalog.has(ui.selectedFont.value.trim()));
+    || (state.selectedSpan?.source === "ocr" && (preservingScanDigits()
+      ? !hasConservativeDigitChange() : !state.fontCatalog.has(ui.selectedFont.value.trim())));
   updateCoherentButtonState();
+}
+
+function preservingScanDigits() {
+  return state.selectedSpan?.source === "ocr" && !ui.selectedFont.value.trim();
+}
+
+function hasConservativeDigitChange() {
+  const oldText = state.selectedSpan?.text || "";
+  const newText = currentInlineText();
+  if (!oldText || oldText.length !== newText.length || oldText.length > 2000) return false;
+  let changes = 0;
+  for (let i = 0; i < oldText.length; i += 1) {
+    if (oldText[i] === newText[i]) continue;
+    if (!/[0-9]/.test(oldText[i]) || !/[0-9]/.test(newText[i])) return false;
+    changes += 1;
+  }
+  return changes > 0 && changes <= 16;
 }
 
 function setInspectorMode(mode = "text") {
@@ -797,11 +815,11 @@ function selectSpan(span, box, objectId = box?.dataset.objectId || null) {
   state.pendingAddition = null;
   ui.selectedText.value = span.text || "";
   ui.selectedFont.value = span.source === "ocr" ? "" : deviceFontForPdfName(span.font)?.label || span.font || "";
-  ui.selectedFont.placeholder = span.source === "ocr" ? "Scegli un carattere…" : "";
+  ui.selectedFont.placeholder = span.source === "ocr" ? "Cifre della scansione originale" : "";
   ui.scanFontNotice.classList.toggle("hidden", span.source !== "ocr");
   ui.selectedSize.value = Number.isFinite(Number(span.size)) ? Math.round(Number(span.size) * 100) / 100 : "";
   ui.selectionHelp.textContent = span.source === "ocr"
-    ? `Pagina ${state.pageNumber} · scansione: font originale non rilevabile.`
+    ? `Pagina ${state.pageNumber} · scansione: correggi le cifre conservando l'aspetto originale, se isolabili.`
     : `Pagina ${state.pageNumber} · font originale ${span.font || "non identificato"}`;
   ui.applyButton.textContent = "Applica Modifica";
   setEditorEnabled(true);
@@ -1484,6 +1502,7 @@ async function applySelectedEdit({ movementOnly = false } = {}) {
   const selectedResource = selectedFont === span.font ? span.font_resource : null;
   const newText = currentInlineText();
   const newSize = Number(ui.selectedSize.value) || Number(span.size);
+  const preserveScanDigits = preservingScanDigits();
 
   state.applyingEdit = true;
   setEditorEnabled(true);
@@ -1505,7 +1524,9 @@ async function applySelectedEdit({ movementOnly = false } = {}) {
         size: newSize,
         color: Number(span.color) || 0,
         source: span.source || "native",
-        confirm_font_substitution: span.source === "ocr" && state.fontCatalog.has(selectedFont),
+        confirm_font_substitution: span.source === "ocr" && !preserveScanDigits && state.fontCatalog.has(selectedFont),
+        preserve_scan_digits: preserveScanDigits,
+        original_text: preserveScanDigits ? span.text || "" : "",
         background_color: Number.isFinite(Number(span.background_color)) ? Number(span.background_color) : 0xFFFFFF,
       }),
     });
@@ -1530,7 +1551,9 @@ async function applySelectedEdit({ movementOnly = false } = {}) {
     await reloadWorkingCopy(editedPage);
     if (objectId && newText.trim()) selectTrackedTextObject(objectId);
     ui.saveButton.disabled = false;
-    setStatus(movementOnly
+    setStatus(result.edit_mode === "scan_digits"
+      ? `${result.changed_digits} cifre corrette usando la scansione originale. Il resto della riga è intatto. Ora puoi salvare la nuova versione.`
+      : movementOnly
       ? `Testo spostato e salvato con ${result.font_used}.`
       : `${span.source === "ocr" ? "Testo nell'immagine" : "Modifica"} applicato con ${result.font_used}.${result.size_used < newSize - 0.05 ? ` Dimensione adattata al riquadro: ${result.size_used.toFixed(1)} pt.` : ""} Ora puoi salvare la nuova versione.`);
   } finally {
@@ -2892,6 +2915,7 @@ ui.selectedText.addEventListener("input", () => {
     state.inlineEditor.content.textContent = ui.selectedText.value;
   }
   fitScannedTextPreview();
+  if (state.selectedSpan) setEditorEnabled(true);
   updateCoherentButtonState();
 });
 

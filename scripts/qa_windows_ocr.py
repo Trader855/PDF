@@ -35,6 +35,9 @@ with tempfile.TemporaryDirectory(prefix="pdf-editor-windows-ocr-") as root_direc
     if "WINDOWS" not in recognized or "2026" not in recognized:
         raise SystemExit(f"Windows OCR did not recognize the regression text: {recognized!r}")
     for observation in observations:
+        words = observation.get("words", [])
+        if not words or not all(isinstance(word.get("text"), str) and len(word.get("bbox", [])) == 4 for word in words):
+            raise SystemExit("Windows OCR did not return word boxes for conservative digit correction")
         bbox = observation.get("bbox")
         if not isinstance(bbox, list) or len(bbox) != 4:
             raise SystemExit(f"Windows OCR returned an invalid bounding box: {bbox!r}")

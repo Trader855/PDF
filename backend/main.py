@@ -22,6 +22,11 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
+if __package__:
+    from .scan_digits import ScanPreservationError, prepare_digit_corrections, apply_digit_corrections
+else:
+    from scan_digits import ScanPreservationError, prepare_digit_corrections, apply_digit_corrections
+
 
 app = FastAPI(title="Tomorrow Now PDF Editor Backend", docs_url=None, redoc_url=None, openapi_url=None)
 OCR_INSPECTION_CACHE: Dict[Tuple[str, int, int, int], List[Dict[str, Any]]] = {}
@@ -179,6 +184,8 @@ class EditTextRequest(BaseModel):
     source: str = "native"
     background_color: int = 0xFFFFFF
     confirm_font_substitution: bool = False
+    preserve_scan_digits: bool = False
+    original_text: str = Field(default="", max_length=2000)
 
 
 class FindRepeatedTextRequest(BaseModel):
@@ -1187,6 +1194,17 @@ def ocr_spans_inside_images(source_path: Path, page_num: int, page: fitz.Page, n
         if any((rect_area(rect & native_rect) / max(rect_area(rect), 1)) > 0.45 for native_rect in native_rects):
             continue
         background, foreground = sampled_image_colors(pixmap, rect, page.rect)
+        words = []
+        for word in observation.get("words", [])[:300]:
+            word_bbox = word.get("bbox", [])
+            if len(word_bbox) != 4:
+                continue
+            wx, wy, ww, wh = map(float, word_bbox)
+            word_rect = fitz.Rect(wx * page.rect.width, (1 - wy - wh) * page.rect.height,
+                                  (wx + ww) * page.rect.width, (1 - wy) * page.rect.height)
+            if word_rect.is_empty or not page.rect.contains(word_rect):
+                continue
+            words.append({"text": str(word.get("text", "")), "bbox": list(word_rect)})
         font_size = max(5.0, min(72.0, rect.height * 0.82))
         recognized.append({
             "text": text,
@@ -1201,6 +1219,8 @@ def ocr_spans_inside_images(source_path: Path, page_num: int, page: fitz.Page, n
             "ascender": 1.0,
             "descender": -0.2,
             "source": "ocr",
+            "confidence": float(observation.get("confidence", 0)),
+            "words": words,
         })
 
     if len(OCR_INSPECTION_CACHE) >= 48:
@@ -1700,6 +1720,37 @@ def edit_text(req: EditTextRequest):
             raise HTTPException(status_code=400, detail="Coordinate del testo non valide")
 
         is_ocr_text = req.source == "ocr"
+        if req.preserve_scan_digits:
+            if not is_ocr_text or req.confirm_font_substitution:
+                raise HTTPException(status_code=422, detail="Modalità scansione conservativa non valida")
+            spans, _ = page_text_spans(source_path, req.page_num, page)
+            target = next((span for span in spans if span.get("source") == "ocr"
+                           and span["text"] == req.original_text
+                           and max(abs(a - b) for a, b in zip(span["bbox"], req.bbox)) < .5), None)
+            if target is None:
+                raise HTTPException(status_code=422, detail="Testo della scansione cambiato o non verificabile: selezionalo di nuovo.")
+            if max(abs(a - b) for a, b in zip(target["origin"], req.origin)) > .1 or abs(target["size"] - req.size) > .1:
+                raise HTTPException(status_code=422, detail="La modalità conservativa non sposta o ridimensiona il testo.")
+            try:
+                plans = prepare_digit_corrections(page, spans, target, req.new_text)
+            except ScanPreservationError as error:
+                raise HTTPException(status_code=422, detail=f"Scansione non modificata. {error}") from error
+            apply_digit_corrections(page, plans)
+            document.save(save_path, garbage=4, deflate=True, preserve_metadata=True)
+            # A mislabeled/touching OCR component must never be handed to the
+            # user as a successful number correction. Reread the saved pixels.
+            with fitz.open(save_path) as verified:
+                verified_spans, _ = page_text_spans(save_path, req.page_num, verified[req.page_num])
+            if not any(span.get("source") == "ocr" and span.get("confidence", 0) >= .8
+                       and normalized_repeated_text(span["text"]) == normalized_repeated_text(req.new_text)
+                       and max(abs(a - b) for a, b in zip(span["bbox"], req.bbox)) < 5
+                       for span in verified_spans):
+                raise HTTPException(status_code=422, detail="Scansione non modificata: la verifica OCR non conferma le nuove cifre.")
+            document.close()
+            os.replace(save_path, output_path)
+            return {"status": "ok", "output_path": str(output_path), "edit_mode": "scan_digits",
+                    "font_used": "cifre della scansione originale", "font_resource": None,
+                    "size_used": target["size"], "changed_digits": len(plans)}
         background_color = req.background_color
         if is_ocr_text:
             require_scan_font_choice(req.font, req.confirm_font_substitution, req.new_text)

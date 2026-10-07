@@ -52,10 +52,20 @@ Accanto a ogni pacchetto è indicato il tag del relativo
 ### Testo dentro le scansioni
 
 L'OCR riconosce il contenuto, non il carattere originale. Un'immagine scansionata
-non contiene una risorsa font da riutilizzare: l'app richiede quindi di scegliere
-un font dal catalogo prima di riscriverla. L'anteprima usa lo stesso file font del
-salvataggio; stile e dimensione possono comunque differire dall'immagine originale.
-Per conservarli esattamente è preferibile modificare il documento sorgente.
+non contiene una risorsa font da riutilizzare. Per date e numeri, lasciando vuoto
+il carattere, l'app può correggere visivamente fino a 16 cifre senza cambiare la
+lunghezza: riusa sagome compatibili della stessa pagina e non riscrive la riga.
+Serve una scansione non ruotata su sfondo bianco, con parole e cifre isolabili e
+campioni sufficienti. L'OCR deve confermare la riga finale prima del salvataggio.
+Campioni mancanti o ambigui vengono rifiutati, senza font di ripiego automatici.
+
+Questa correzione conserva l'immagine sottostante: i numeri originali restano
+recuperabili. **Non è redazione sicura né rimozione definitiva di dati riservati.**
+Non ricostruisce un font completo né converte la scansione in paragrafi nativi.
+Per riscrivere lettere, frasi o cambiare impaginazione bisogna scegliere un font
+dal catalogo. L'anteprima usa lo stesso file font del salvataggio; stile e
+dimensione possono comunque differire. Il documento sorgente resta preferibile
+per modifiche estese che richiedono fedeltà tipografica.
 
 Comic Sans MS, normale e grassetto, è disponibile nel catalogo quando già installato
 su macOS o Windows; non è incluso nei pacchetti distribuiti. La riga riscritta viene

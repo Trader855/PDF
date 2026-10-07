@@ -25,6 +25,7 @@ build/icon_1024_previous.png
 
 # Generated QA files
 tmp/
+output/
 
 # The browser edition is maintained and deployed separately
 web-site/
