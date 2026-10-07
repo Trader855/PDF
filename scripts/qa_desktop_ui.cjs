@@ -137,7 +137,9 @@ const root = path.resolve(__dirname, '..');
     await page.locator('#pdf-file-input').setInputFiles(scanned);
     await page.waitForFunction(() => document.querySelector('#page-indicator').textContent === '1 / 1' && document.querySelector('#status').textContent.includes('PDF caricato'));
     await page.locator('#edit-mode').click();
-    await page.locator('.text-box[title="SCANSIONE 05/08/2026"]').waitFor();
+    // The real OCR subprocess has a 20s deadline (Windows includes a cold
+    // PowerShell/WinRT startup). Do not expire the UI assertion at 15s first.
+    await page.locator('.text-box[title="SCANSIONE 05/08/2026"]').waitFor({ timeout: 30000 });
     await page.locator('.text-box[title="SCANSIONE 05/08/2026"]').click();
     assert.equal(await page.locator('#selected-font').inputValue(), '');
     assert.equal(await page.locator('#scan-font-notice').isVisible(), true);
@@ -219,6 +221,9 @@ const root = path.resolve(__dirname, '..');
     console.log('Electron UI QA OK: open, edit, font preview, page 25, bounded thumbnails, password-protected insertion, IPC boundary.');
   } catch (error) {
     console.log('QA status:', await page.locator('#status').textContent());
+    // This isolated profile only processes the generated fixtures above.
+    const backendLog = path.join(temp, 'profile/logs/backend.log');
+    if (fs.existsSync(backendLog)) console.log('QA backend diagnostics:', fs.readFileSync(backendLog, 'utf8').slice(-8000));
     await page.screenshot({ path: path.join(os.tmpdir(), 'pdf-security-ui-failure.png') });
     throw error;
   } finally {
