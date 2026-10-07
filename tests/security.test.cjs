@@ -184,6 +184,35 @@ test('Font consent crosses IPC without granting an output until confirmation', {
   }
 });
 
+test('Backend environment preserves named OS context but never arbitrary private variables', async () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'pdf-env-boundary-'));
+  const worker = path.join(temp, 'synthetic-worker.cjs');
+  const previous = Object.fromEntries(['PROCESSOR_LEVEL', 'TN_QA_UNTRUSTED_SECRET'].map(key => [key, process.env[key]]));
+  let session;
+  try {
+    fs.writeFileSync(worker, `const fs = require('fs'); const readline = require('readline');
+      readline.createInterface({ input: process.stdin }).once('line', line => {
+        const request = JSON.parse(line);
+        console.log(JSON.stringify({ system: process.env.PROCESSOR_LEVEL, private: 'TN_QA_UNTRUSTED_SECRET' in process.env }));
+        fs.writeSync(3, JSON.stringify({ session_id: request.session_id, port: 12345 }) + '\\n');
+      }); process.stdin.on('end', () => process.exit(0));`);
+    process.env.PROCESSOR_LEVEL = 'synthetic-system-context';
+    process.env.TN_QA_UNTRUSTED_SECRET = 'synthetic-do-not-forward';
+    let output = '';
+    session = new BackendSession({ executable: process.execPath, args: [worker], cwd: root,
+      fonts: path.join(root, 'assets/fonts'), tempRoot: temp, log: chunk => { output += chunk.toString(); } });
+    await session.ready;
+    await session.stop();
+    assert.deepEqual(JSON.parse(output.trim()), { system: 'synthetic-system-context', private: false });
+  } finally {
+    if (session) await session.stop();
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+    fs.rmSync(temp, { recursive: true, force: true });
+  }
+});
+
 test('Font conflict transport rejects malformed details and strips unexpected capabilities', async () => {
   const session = Object.assign(Object.create(BackendSession.prototype), {
     pending: 0, queue: Promise.resolve(), ready: Promise.resolve(), stopped: false,

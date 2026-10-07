@@ -53,11 +53,16 @@ with tempfile.TemporaryDirectory(prefix="pdf-editor-windows-ocr-") as root_direc
     # Print only success/error classes, never environment values or document data.
     safe_keys = ['PATH', 'HOME', 'TMPDIR', 'TEMP', 'TMP', 'USERPROFILE', 'LOCALAPPDATA',
                  'APPDATA', 'SystemRoot', 'WINDIR', 'LANG', 'LC_ALL', 'LC_CTYPE']
-    machine_keys = ['ProgramData', 'ALLUSERSPROFILE', 'ProgramFiles', 'ProgramFiles(x86)',
-                    'CommonProgramFiles', 'CommonProgramFiles(x86)', 'ComSpec']
+    machine_keys = ['SystemDrive', 'ComSpec', 'ProgramData', 'ALLUSERSPROFILE', 'PUBLIC',
+                    'ProgramFiles', 'ProgramFiles(x86)', 'ProgramW6432',
+                    'CommonProgramFiles', 'CommonProgramFiles(x86)', 'CommonProgramW6432',
+                    'USERNAME', 'USERDOMAIN', 'USERDOMAIN_ROAMINGPROFILE', 'COMPUTERNAME',
+                    'HOMEDRIVE', 'HOMEPATH', 'SESSIONNAME', 'OS', 'PSModulePath',
+                    'PROCESSOR_ARCHITECTURE', 'PROCESSOR_IDENTIFIER', 'PROCESSOR_LEVEL',
+                    'PROCESSOR_REVISION', 'NUMBER_OF_PROCESSORS']
     current_environment = dict(os.environ)
     case_insensitive_environment = {key.upper(): value for key, value in current_environment.items()}
-    for label, keys in [('desktop-minimal', safe_keys), ('desktop-system-paths', safe_keys + machine_keys)]:
+    for label, keys in [('desktop-system-context', safe_keys + machine_keys)]:
         environment = {key: case_insensitive_environment[key.upper()] for key in keys if key.upper() in case_insensitive_environment}
         try:
             with patch.dict(os.environ, environment, clear=True):
@@ -67,5 +72,4 @@ with tempfile.TemporaryDirectory(prefix="pdf-editor-windows-ocr-") as root_direc
             print(f"Windows OCR environment diagnostic {label}: PASS")
         except Exception as error:
             print(f"Windows OCR environment diagnostic {label}: {type(error).__name__}")
-            if label == 'desktop-system-paths':
-                raise
+            raise

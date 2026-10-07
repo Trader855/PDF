@@ -141,6 +141,15 @@ class BackendSession {
     const env = Object.fromEntries([
       'PATH', 'HOME', 'TMPDIR', 'TEMP', 'TMP', 'USERPROFILE', 'LOCALAPPDATA',
       'APPDATA', 'SystemRoot', 'WINDIR', 'LANG', 'LC_ALL', 'LC_CTYPE',
+      // WinRT/Windows PowerShell need the OS profile and architecture context.
+      // Keep named system variables only, never API keys or arbitrary inherited env.
+      'SystemDrive', 'ComSpec', 'ProgramData', 'ALLUSERSPROFILE', 'PUBLIC',
+      'ProgramFiles', 'ProgramFiles(x86)', 'ProgramW6432',
+      'CommonProgramFiles', 'CommonProgramFiles(x86)', 'CommonProgramW6432',
+      'USERNAME', 'USERDOMAIN', 'USERDOMAIN_ROAMINGPROFILE', 'COMPUTERNAME',
+      'HOMEDRIVE', 'HOMEPATH', 'SESSIONNAME', 'OS', 'PSModulePath',
+      'PROCESSOR_ARCHITECTURE', 'PROCESSOR_IDENTIFIER', 'PROCESSOR_LEVEL',
+      'PROCESSOR_REVISION', 'NUMBER_OF_PROCESSORS',
     ]
       .filter((key) => process.env[key] !== undefined).map((key) => [key, process.env[key]]));
     env.PYTHONUNBUFFERED = '1';
