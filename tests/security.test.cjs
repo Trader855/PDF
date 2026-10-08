@@ -50,6 +50,36 @@ test('Backend outputs must be direct children of the private session', () => {
   }
 });
 
+test('Actual backend: native CID word fidelity survives freezing and IPC', { timeout: 30000 }, async () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'pdf-cid-packaged-'));
+  let session;
+  try {
+    execFileSync(python, ['-c', 'import sys; from pathlib import Path; sys.path.insert(0,"tests"); from test_native_word_fidelity import NativeWordFidelityTests; t=NativeWordFidelityTests(); t.root=Path(sys.argv[1]); t.fixture(cid=True)', temp], { cwd: root });
+    const packaged = process.env.QA_BACKEND_EXECUTABLE;
+    session = new BackendSession({ executable: packaged || python,
+      args: packaged ? [] : [path.join(root, 'backend/main.py')], cwd: root,
+      fonts: process.env.QA_FONTS_DIRECTORY || path.join(root, 'assets/fonts'), tempRoot: temp, log: () => {} });
+    await session.ready;
+    const source = session.files.register(path.join(temp, 'source.pdf'));
+    const original = fs.readFileSync(source);
+    const span = (await session.request('/inspect-text', { file_path: source, page_num: 0 })).spans.find(item => item.text === 'Torino Torino strada');
+    assert.ok(span);
+    const result = await session.request('/edit-text', { ...span, file_path: source, page_num: 0,
+      original_text: span.text, new_text: 'Torino Milano strada' });
+    assert.equal(result.edit_mode, 'native_word');
+    assert.equal(result.font_used, span.font);
+    const spans = (await session.request('/inspect-text', { file_path: result.output_path, page_num: 0 })).spans;
+    assert.ok(spans.some(item => item.text === 'RIGA SOPRA Milano'));
+    assert.ok(spans.some(item => item.text === 'RIGA SOTTO'));
+    assert.ok(spans.some(item => item.text.includes('Milano') && item.font === span.font));
+    execFileSync(python, ['-c', 'import fitz,sys; d=fitz.open(sys.argv[1]); assert len(d[0].search_for("Torino Milano strada"))==1; assert d[0].get_text(sort=True).count("Torino")==1; assert len(d[0].get_fonts())==1', result.output_path]);
+    assert.deepEqual(fs.readFileSync(source), original);
+  } finally {
+    if (session) await session.stop();
+    fs.rmSync(temp, { recursive: true, force: true });
+  }
+});
+
 test('Actual backend: private pipe, ephemeral port, auth, fonts, passwords, round trip and cleanup', { timeout: 80000 }, async () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'pdf-session-test-'));
   // Occupy the old fixed port when available: the app must not connect to it.

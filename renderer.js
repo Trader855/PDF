@@ -1562,7 +1562,7 @@ async function applySelectedEdit({ movementOnly = false } = {}) {
       source: span.source || "native",
       confirm_font_substitution: span.source === "ocr" && !preserveScanDigits && state.fontCatalog.has(selectedFont),
       preserve_scan_digits: preserveScanDigits,
-      original_text: preserveScanDigits ? span.text || "" : "",
+      original_text: span.text || "",
       background_color: Number.isFinite(Number(span.background_color)) ? Number(span.background_color) : 0xFFFFFF,
     });
     if (!result) {

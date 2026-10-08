@@ -17,12 +17,15 @@ const root = path.resolve(__dirname, '..');
   const unknownFont = path.join(documents, 'native.pdf');
   const containingText = path.join(documents, 'containing-text.pdf');
   const caseText = path.join(documents, 'case-text.pdf');
+  const cidWord = path.join(documents, 'cid-word.pdf');
   execFileSync(virtualEnvironmentPython(root), ['-c',
     'import fitz,sys; from pathlib import Path; p=Path(sys.argv[1]); d=fitz.open(); [(d.new_page().insert_text((72,72),"DATA 05/08/2026 PAGINA %d"%i)) for i in range(1,26)]; d.save(p/"relazione finale.pdf"); d.save(p/"allegato protetto.pdf",encryption=fitz.PDF_ENCRYPT_AES_256,owner_pw="owner",user_pw="test-password"); d.close(); d=fitz.open(); s=d.new_page(width=595,height=400); s.insert_text((72,140),"SCANSIONE 05/08/2026",fontsize=32); png=s.get_pixmap(matrix=fitz.Matrix(2,2),alpha=False).tobytes("png"); d.close(); d=fitz.open(); s=d.new_page(width=595,height=400); s.insert_image(s.rect,stream=png); d.save(p/"scansione sintetica.pdf"); d.close()', documents]);
   execFileSync(virtualEnvironmentPython(root), ['-c',
     'import sys; from pathlib import Path; sys.path.insert(0,"tests"); from test_font_edit_safety import FontEditSafetyTests; t=FontEditSafetyTests(); t.root=Path(sys.argv[1]); t.native_fixture(pages=2)', documents], { cwd: root });
   execFileSync(virtualEnvironmentPython(root), ['-c',
     'import fitz,sys; from pathlib import Path; root=Path(sys.argv[1]);\nfor name,text in [("containing-text.pdf","Rossi"),("case-text.pdf","abc")]:\n d=fitz.open();\n for _ in range(2):\n  p=d.new_page(width=400,height=250); p.insert_text((40,100),text,fontname="helv",fontsize=18)\n d.save(root/name); d.close()', documents]);
+  execFileSync(virtualEnvironmentPython(root), ['-c',
+    'import sys; from pathlib import Path; sys.path.insert(0,"tests"); from test_native_word_fidelity import NativeWordFidelityTests; t=NativeWordFidelityTests(); t.root=Path(sys.argv[1]); t.fixture(cid=True).rename(t.root/"cid-word.pdf")', documents], { cwd: root });
   const errors = [];
   console.log('QA: launch isolated Electron');
   const application = await _electron.launch({ executablePath: require('electron'),
@@ -266,6 +269,22 @@ const root = path.resolve(__dirname, '..');
       await page.locator(`.text-box[title="${replacement}"]`).waitFor();
     }
     console.log('QA: containing replacements and case-only changes never produce a false residue warning.');
+    await page.locator('#pdf-file-input').setInputFiles(cidWord);
+    await page.waitForFunction(() => document.querySelector('#status').textContent.includes('PDF caricato'));
+    await page.locator('#edit-mode').click();
+    await page.locator('.text-box[title="Torino Torino strada"]').click();
+    const originalFace = await page.locator('#selected-font').inputValue();
+    await page.locator('#selected-text').fill('Torino Milano strada');
+    await page.locator('#apply-edit').click();
+    const editedWord = page.locator('.text-box[title="Milano"], .text-box[title="Torino Milano strada"]').first();
+    await editedWord.waitFor();
+    assert.equal(await page.locator('#font-consent-dialog').isVisible(), false);
+    await page.locator('.text-box[title="RIGA SOPRA Milano"]').waitFor();
+    await page.locator('.text-box[title="RIGA SOTTO"]').waitFor();
+    await editedWord.click();
+    assert.match(await page.locator('#selected-text').inputValue(), /Milano/);
+    assert.equal(await page.locator('#selected-font').inputValue(), originalFace);
+    console.log('QA: CID word keeps its original font, both neighboring rows and remains selectable.');
     assert.deepEqual(errors, []);
     console.log('Electron UI QA OK: open, edit, font preview, page 25, bounded thumbnails, password-protected insertion, IPC boundary.');
   } catch (error) {

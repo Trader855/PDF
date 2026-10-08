@@ -24,8 +24,10 @@ from pydantic import BaseModel, Field
 
 if __package__:
     from .scan_digits import ScanPreservationError, prepare_digit_corrections, apply_digit_corrections
+    from .native_text import NativeEditError, target as native_target, glyphs as native_glyphs, check_redaction, cid_word_edit
 else:
     from scan_digits import ScanPreservationError, prepare_digit_corrections, apply_digit_corrections
+    from native_text import NativeEditError, target as native_target, glyphs as native_glyphs, check_redaction, cid_word_edit
 
 
 app = FastAPI(title="Tomorrow Now PDF Editor Backend", docs_url=None, redoc_url=None, openapi_url=None)
@@ -1680,6 +1682,8 @@ def batch_edit_text(req: BatchEditTextRequest):
     save_path = output_path.with_name(f".{output_path.stem}-{uuid.uuid4().hex}.tmp.pdf")
 
     prepared_by_page: Dict[int, List[Tuple[BatchTextChange, Optional[str], str]]] = {}
+    native_targets_by_page = {}
+    native_rects_by_location = {}
     seen_locations = set()
     try:
         # Tutti i font vengono verificati prima della prima redazione: se una
@@ -1710,6 +1714,9 @@ def batch_edit_text(req: BatchEditTextRequest):
                 change = change.model_copy(update={"background_color": background})
             else:
                 require_visible_native_target(page, rect)
+                native_selection = native_target(page, change.bbox)
+                native_targets_by_page.setdefault(change.page_num, []).append(native_selection)
+                native_rects_by_location[(change.page_num, tuple(change.bbox))] = native_selection.rect
             if req.new_text:
                 if change.source == "ocr":
                     font_resource, font_used = resolve_text_font(
@@ -1739,10 +1746,11 @@ def batch_edit_text(req: BatchEditTextRequest):
         fonts_used = set()
         for page_num, prepared_changes in prepared_by_page.items():
             page = document[page_num]
+            native_before = native_glyphs(page) if native_targets_by_page.get(page_num) else None
             redact_images = any(change.source == "ocr" for change, _, _ in prepared_changes)
             for change, _, _ in prepared_changes:
                 page.add_redact_annot(
-                    fitz.Rect(change.bbox),
+                    (native_rects_by_location[(page_num, tuple(change.bbox))] if change.source != "ocr" else fitz.Rect(change.bbox)),
                     fill=(
                         int_to_pdf_color(change.background_color)
                         if change.source == "ocr"
@@ -1751,6 +1759,8 @@ def batch_edit_text(req: BatchEditTextRequest):
                     cross_out=False,
                 )
             page.apply_redactions(images=2 if redact_images else 0, graphics=0, text=0)
+            if native_before is not None:
+                check_redaction(page, native_before, native_targets_by_page[page_num])
 
             if req.new_text:
                 for change, font_resource, font_used in prepared_changes:
@@ -1799,6 +1809,8 @@ def batch_edit_text(req: BatchEditTextRequest):
             "changed_count": len(req.changes),
             "fonts_used": sorted(fonts_used),
         }
+    except NativeEditError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
     except HTTPException:
         raise
     except Exception as error:
@@ -1822,8 +1834,17 @@ def edit_text(req: EditTextRequest):
             raise HTTPException(status_code=400, detail="Coordinate del testo non valide")
 
         is_ocr_text = req.source == "ocr"
+        native_selection = None
+        word_plan = None
         if not is_ocr_text:
             require_visible_native_target(page, rect)
+            native_selection = native_target(page, req.bbox)
+            if req.original_text and req.original_text != ''.join(c['c'] for c in native_selection.span['chars']):
+                raise NativeEditError('Il testo originale è cambiato. Selezionalo nuovamente.')
+            if not req.confirm_font_substitution:
+                word_plan = cid_word_edit(page, req.bbox, req.font, req.origin, req.size, req.color, req.new_text)
+            if word_plan is not None:
+                native_selection = word_plan.target
         if req.preserve_scan_digits:
             if not is_ocr_text or req.confirm_font_substitution:
                 raise HTTPException(status_code=422, detail="Modalità scansione conservativa non valida")
@@ -1871,7 +1892,9 @@ def edit_text(req: EditTextRequest):
         if req.new_text:
             # Preflight prima della redazione: un glifo mancante non deve mai
             # cancellare il contenuto originale lasciando il riquadro vuoto.
-            if is_ocr_text:
+            if word_plan is not None:
+                font_resource, font_used = word_plan.font[4], req.font
+            elif is_ocr_text:
                 font_resource, font_used = resolve_text_font(
                     page, req.font, req.font_resource, req.new_text,
                     allow_original_resource=False, allow_font_substitution=False,
@@ -1886,16 +1909,21 @@ def edit_text(req: EditTextRequest):
 
         # Per testo nativo elimina solo i glifi. Per testo dentro un'immagine
         # ricostruisce invece i pixel della piccola area usando lo sfondo stimato.
+        native_before = native_glyphs(page) if native_selection is not None else None
         page.add_redact_annot(
-            rect,
+            native_selection.rect if native_selection is not None else rect,
             fill=int_to_pdf_color(background_color) if is_ocr_text else None,
             cross_out=False,
         )
         page.apply_redactions(images=2 if is_ocr_text else 0, graphics=0, text=0)
+        if native_selection is not None:
+            check_redaction(page, native_before, [native_selection])
 
         if req.new_text:
             try:
-                if is_ocr_text:
+                if word_plan is not None:
+                    word_plan.insert(page)
+                elif is_ocr_text:
                     font_resource, font_used = resolve_text_font(
                         page, req.font, font_resource, req.new_text,
                         allow_original_resource=False, allow_font_substitution=False,
@@ -1905,15 +1933,16 @@ def edit_text(req: EditTextRequest):
                         page, req.font, font_resource, req.new_text,
                         req.confirm_font_substitution, req.confirmed_substitute_font,
                     )
-                page.insert_text(
-                    fitz.Point(req.origin),
-                    req.new_text,
-                    fontname=font_resource,
-                    fontsize=size_used,
-                    color=fitz.sRGB_to_pdf(req.color),
-                    rotate=upright_text_rotation(page),
-                    overlay=True,
-                )
+                if word_plan is None:
+                    page.insert_text(
+                        fitz.Point(req.origin),
+                        req.new_text,
+                        fontname=font_resource,
+                        fontsize=size_used,
+                        color=fitz.sRGB_to_pdf(req.color),
+                        rotate=upright_text_rotation(page),
+                        overlay=True,
+                    )
             except HTTPException:
                 raise
             except Exception as error:
@@ -1923,6 +1952,12 @@ def edit_text(req: EditTextRequest):
                 ) from error
 
         document.save(save_path, garbage=4, deflate=True, preserve_metadata=True)
+        if native_selection is not None:
+            with fitz.open(save_path) as verified:
+                checked = verified[req.page_num]
+                remaining = native_before - (word_plan.replaced if word_plan is not None else native_selection.removed)
+                if remaining - native_glyphs(checked) or word_plan is not None and not word_plan.verified(checked):
+                    raise NativeEditError('Il risultato non conserva il testo originale. Nessuna modifica salvata.')
         document.close()
         os.replace(save_path, output_path)
 
@@ -1932,7 +1967,10 @@ def edit_text(req: EditTextRequest):
             "font_used": font_used,
             "font_resource": font_resource,
             "size_used": size_used,
+            "edit_mode": "native_word" if word_plan is not None else "text",
         }
+    except NativeEditError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
     except HTTPException:
         raise
     except Exception as error:
