@@ -187,6 +187,70 @@ class NativeWordFidelityTests(unittest.TestCase):
                 with self.subTest(value=value), self.assertRaises(native_text.NativeEditError):
                     native_text._numeric_array(doc, value)
 
+    def test_width_parser_has_one_global_budget_and_rejects_repeated_references(self):
+        class FakeDocument:
+            calls = 0
+            def xref_object(self, number):
+                self.calls += 1
+                return '['+'1 '*15_000+']'
+        fake = FakeDocument()
+        with self.assertRaises(native_text.NativeEditError):
+            native_text._numeric_array(fake, '[5 0 R 5 0 R]')
+        self.assertEqual(fake.calls, 1)
+        fake = FakeDocument()
+        with self.assertRaises(native_text.NativeEditError):
+            native_text._numeric_array(fake, '[5 0 R 6 0 R]')
+        self.assertEqual(fake.calls, 2)
+        class ExpandedWidths:
+            def xref_get_key(self, *_): return 'array','['+'0 4096 1 '*18+']'
+        with self.assertRaises(native_text.NativeEditError):
+            native_text._widths(ExpandedWidths(), 1)
+
+    def test_native_word_resets_residual_text_state(self):
+        source = self.fixture(cid=True)
+        with fitz.open(source) as doc:
+            page=doc[0];xref=doc.get_new_xref();doc.update_object(xref,'<<>>')
+            doc.update_stream(xref,b'BT -4 Tc 80 Tz 3 Ts 3 Tr ET\n')
+            doc.xref_set_key(page.xref,'Contents','[ '+' '.join(f'{x} 0 R' for x in page.get_contents()+[xref])+' ]')
+            doc.save(self.root/'state.pdf')
+        source=self.root/'state.pdf'
+        result=main.edit_text(self.request(source,self.selected(source)))
+        self.assertEqual(result['edit_mode'],'native_word')
+        with fitz.open(result['output_path']) as doc:
+            self.assertEqual(len(doc[0].search_for('Torino Milano strada')),1)
+
+    def test_name_collision_with_non_cid_font_does_not_supply_glyph_donors(self):
+        source=self.fixture(cid=True)
+        with fitz.open(source) as doc:
+            page=doc[0];original=page.get_fonts()[0]
+            other=page.insert_font(fontname='helv')
+            value=original[3].replace('-Identity-H','')
+            encoded='/'+''.join(c if c.isascii() and (c.isalnum() or c in '_-') else f'#{ord(c):02x}' for c in value)
+            doc.xref_set_key(other,'BaseFont',encoded)
+            doc.save(self.root/'collision.pdf')
+        source=self.root/'collision.pdf';span=self.selected(source)
+        with fitz.open(source) as doc:
+            self.assertIsNone(native_text.cid_word_edit(doc[0],span['bbox'],span['font'],span['origin'],span['size'],span['color'],'Torino Milano strada'))
+
+    def test_invisible_neighbor_is_preserved_or_the_edit_is_rejected_atomically(self):
+        source=self.fixture(cid=True)
+        with fitz.open(source) as doc:
+            doc[0].insert_text((40,88),'HIDDEN NEIGHBOUR',fontsize=12,render_mode=3)
+            doc.save(self.root/'hidden.pdf')
+        source=self.root/'hidden.pdf';original=source.read_bytes()
+        with fitz.open(source) as doc:
+            hidden=native_text.glyphs(doc[0])
+            hidden=Counter({key:count for key,count in hidden.items() if key[5]==3 or key[6]==0})
+        try:
+            result=main.edit_text(self.request(source,self.selected(source)))
+        except HTTPException as error:
+            self.assertEqual(error.status_code,422)
+            self.assertFalse((self.root/'result.pdf').exists())
+        else:
+            with fitz.open(result['output_path']) as doc:
+                self.assertFalse(hidden-native_text.glyphs(doc[0]))
+        self.assertEqual(source.read_bytes(),original)
+
 
 if __name__=='__main__':
     unittest.main()

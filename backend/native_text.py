@@ -31,8 +31,6 @@ def _label(character, origin, font):
 def glyphs(page):
     records = []
     for trace in page.get_texttrace():
-        if trace['type'] == 3 or trace.get('opacity', 1) == 0:
-            continue
         for char in trace['chars']:
             records.append((_label(chr(char[0]), char[2], trace['font']), char[1],
                 round(trace['size'], 2), tuple(round(v, 4) for v in trace['dir']),
@@ -53,7 +51,7 @@ class NativeTarget:
 
 def target(page, bbox, start=0, end=None, whole_line=False):
     lines = [l for b in page.get_text('rawdict')['blocks'] for l in b.get('lines', [])]
-    raw = [s for l in lines for s in l.get('spans', []) if _visible(s)]
+    raw = [s for l in lines for s in l.get('spans', [])]
     candidates = [(s,l) for l in lines for s in l.get('spans', []) if _visible(s)
                   and max(abs(a-b) for a, b in zip(s['bbox'], bbox)) < .05]
     if len(candidates) != 1:
@@ -76,12 +74,14 @@ def target(page, bbox, start=0, end=None, whole_line=False):
     # Only actual drawn glyphs count: extracted spaces may be synthetic.
     before = glyphs(page)
     drawn_labels = {key[0] for key in before}
-    removed = Counter({key: count for key, count in before.items() if key[0] in labels})
+    removed = Counter({key: count for key, count in before.items() if key[0] in labels and key[5] != 3 and key[6] > 0})
     if not removed:
         raise NativeEditError('I glifi originali non sono verificabili.')
     # MuPDF removes any glyph touching a redaction, not only contained glyphs.
     # Find a thin strip shared by target glyphs and disjoint from all others.
     boxes = [fitz.Rect(c['bbox']) for c in chars if not fitz.Rect(c['bbox']).is_empty]
+    if not boxes:
+        raise NativeEditError('Il testo non ha un rettangolo verificabile.')
     left = rect.x0 + min(.2, boxes[0].width / 3)
     right = rect.x1 - min(.2, boxes[-1].width / 3)
     low, high = max(b.y0 for b in boxes), min(b.y1 for b in boxes)
@@ -126,13 +126,16 @@ def check_redaction(page, before, targets):
         raise NativeEditError('La modifica toccherebbe altri caratteri. Nessuna modifica salvata.')
 
 
-def _numeric_array(doc, value, depth=0):
+def _numeric_array(doc, value, depth=0, budget=None, visited=None):
+    if budget is None: budget = [20_000]
+    if visited is None: visited = set()
     if depth > 4 or len(value) > 200_000:
         raise NativeEditError('Tabella delle larghezze del font non supportata.')
     tokens = re.findall(r'\[|\]|R|[+-]?(?:\d+\.\d*|\.\d+|\d+)', value)
     if re.sub(r'\[|\]|R|[+-]?(?:\d+\.\d*|\.\d+|\d+)|\s', '', value):
         raise NativeEditError('Tabella delle larghezze del font non supportata.')
-    if len(tokens) > 20_000 or not tokens or tokens[0] != '[':
+    budget[0] -= len(tokens)
+    if budget[0] < 0 or not tokens or tokens[0] != '[':
         raise NativeEditError('Tabella delle larghezze del font non supportata.')
     index = 0
     def read(nesting=0):
@@ -151,7 +154,11 @@ def _numeric_array(doc, value, depth=0):
         if index+1 < len(tokens) and tokens[index] == '0' and tokens[index+1] == 'R':
             index += 2
             if number != int(number) or number <= 0: raise NativeEditError('Riferimento font non valido.')
-            return _numeric_array(doc, doc.xref_object(int(number)), depth+1)
+            reference = int(number)
+            if reference in visited:
+                raise NativeEditError('Riferimento font ciclico o ripetuto.')
+            visited.add(reference)
+            return _numeric_array(doc, doc.xref_object(reference), depth+1, budget, visited)
         return number
     result = read()
     if index != len(tokens): raise NativeEditError('Tabella non valida.')
@@ -165,7 +172,7 @@ def _widths(doc, descendant):
         kind = 'array'
     if kind != 'array': raise NativeEditError('Larghezze CID non disponibili.')
     data = _numeric_array(doc, value)
-    result, index = {}, 0
+    result, index, expanded = {}, 0, 0
     while index < len(data):
         start = data[index]; index += 1
         if not isinstance(start, float) or start != int(start) or not 0 <= start <= 65535:
@@ -179,6 +186,9 @@ def _widths(doc, descendant):
                 raise NativeEditError('Intervallo CID non valido.')
             width = data[index]; index += 1
             values = [width] * (int(item)-start+1)
+        expanded += len(values)
+        if expanded > 65536:
+            raise NativeEditError('Tabella delle larghezze troppo estesa.')
         for offset, width in enumerate(values):
             if not isinstance(width, float) or not 0 <= width < 5000 or start+offset > 65535:
                 raise NativeEditError('Larghezza CID non valida.')
@@ -219,6 +229,7 @@ class CIDWordEdit:
     bounds: fitz.Rect
     replaced: Counter
     word_origin: tuple
+    word_origins: tuple
     pixels: fitz.Pixmap
     clip: fitz.Rect
 
@@ -232,7 +243,8 @@ class CIDWordEdit:
                 if char[0] != ord(self.word[0]) or math.dist(char[2], self.word_origin) >= .01: continue
                 run = chars[index:index+len(self.word)]
                 if (''.join(chr(c[0]) for c in run) == self.word
-                    and tuple(c[1] for c in run) == self.codes):
+                    and tuple(c[1] for c in run) == self.codes
+                    and all(math.dist(c[2], origin) < .02 for c,origin in zip(run,self.word_origins))):
                     return self.pixels_verified(page)
         return False
 
@@ -257,6 +269,7 @@ class CIDWordEdit:
 
     def insert(self, page):
         doc = page.parent
+        page.wrap_contents()
         # Redaction may prune the resource: reattach the exact original xref.
         resource = doc.xref_get_key(page.xref, 'Resources')[1]
         owner = int(resource.split()[0]) if resource.endswith(' 0 R') else page.xref
@@ -293,6 +306,11 @@ def cid_word_edit(page, bbox, font_name, origin, size, color, new_text):
         return None
     doc = page.parent
     if doc.get_ocgs(): return None
+    # Traces identify faces by name, so a second face/resource with the same
+    # name (including XObjects and non-Type0 faces) makes glyph donors ambiguous.
+    matching_faces = [font for font in page.get_fonts(full=True)
+        if _name(re.sub(r'-Identity-H$', '', font[3])) == _name(span['font'])]
+    if len(matching_faces) != 1: return None
     if doc.xref_get_key(page.xref, 'Resources')[0] not in {'dict', 'xref'}:
         return None
     fonts = []
@@ -337,7 +355,7 @@ def cid_word_edit(page, bbox, font_name, origin, size, color, new_text):
         point = fitz.Point(first) * ~page.transformation_matrix
         rgb = fitz.sRGB_to_pdf(color)
         matrix = (scale, -direction[1]/direction[0]*scale, 0, 1, point.x, point.y)
-        word_stream = ('q BT /'+font[4]+f' {vertical_size:.8f} Tf '+
+        word_stream = ('q BT 0 Tc 0 Tw 100 Tz 0 Ts 0 Tr /'+font[4]+f' {vertical_size:.8f} Tf '+
                   ' '.join(f'{c:.8f}' for c in rgb)+' rg '+
                   ' '.join(f'{v:.8f}' for v in matrix)+' Tm <'+
                   ''.join(f'{c:04x}' for c in codes)+'> Tj ET Q\n').encode('ascii')
@@ -369,7 +387,7 @@ def cid_word_edit(page, bbox, font_name, origin, size, color, new_text):
                 b = -trace['size']*trace['dir'][1]/nominal
                 if not .7 < h < 1.4 or abs(b) > .02: return None
                 point = fitz.Point(char[2])*~page.transformation_matrix
-                program.append((f'q BT /{font[4]} {nominal:.8f} Tf '+
+                program.append((f'q BT 0 Tc 0 Tw 100 Tz 0 Ts 0 Tr /{font[4]} {nominal:.8f} Tf '+
                     ' '.join(f'{c:.8f}' for c in trace['color'])+' rg '+
                     f'{h:.8f} {b:.8f} 0 {1/h:.8f} {point.x:.8f} {point.y:.8f} Tm '
                     f'<{char[1]:04x}> Tj ET Q\n').encode('ascii'))
@@ -377,7 +395,12 @@ def cid_word_edit(page, bbox, font_name, origin, size, color, new_text):
         clip = (fitz.Rect(whole.span['bbox'])+(-2,-2,2,2)) & page.rect
         if clip.is_empty or clip.width*clip.height*4 > 500_000: return None
         pixels = page.get_pixmap(matrix=fitz.Matrix(2,2),clip=clip,alpha=False,annots=False)
+        distance = 0
+        origins = []
+        for code in codes:
+            origins.append((first[0]+distance, first[1]+distance*direction[1]/direction[0]))
+            distance += widths[code]*vertical_size*scale/1000
         return CIDWordEdit(whole, font, b''.join(program), word, tuple(codes), rect,
-                           selection.removed, first, pixels, clip)
+                           selection.removed, first, tuple(origins), pixels, clip)
     except (NativeEditError, ValueError, IndexError, KeyError, StopIteration, ZeroDivisionError):
         return None
