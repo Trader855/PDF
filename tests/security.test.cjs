@@ -274,6 +274,9 @@ test('Coherent verification checks literal remnants and handles truncated result
   assert.match(verification, /query: originalText/);
   assert.match(verification, /verification\.truncated/);
   assert.match(verification, /verifica completa non è disponibile/);
+  assert.match(verification, /normalizedEditorText\(replacementText\)\.toLowerCase\(\)/);
+  assert.match(verification, /includes\(normalizedEditorText\(originalText\)\.toLowerCase\(\)\)/);
+  assert.match(verification, /replacementContainsQuery\s*\?\s*"[^"\n]*verifica non conclusiva/);
   assert.doesNotMatch(verification, /apiRequest\("\/find-repeated-text"/);
 });
 

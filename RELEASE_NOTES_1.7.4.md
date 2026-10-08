@@ -22,6 +22,9 @@ Correzione della modifica di testo nelle scansioni.
 - Il processo OCR non eredita più il canale di comunicazione aperto dell'app. La build Mac allinea il requisito del motore OCR a macOS 13 e lo verifica nel pacchetto.
 - Il focus del riquadro di testo non viene più spostato in un frame successivo mentre l'utente sta digitando nel pannello laterale. Un test con frame ritardato impedisce la regressione.
 - La verifica delle sostituzioni multiple cerca il vecchio testo anche dentro righe più lunghe e segnala le ricerche troncate, evitando una conferma positiva basata solo su corrispondenze integrali.
+- Se la sostituzione contiene volutamente il testo cercato o cambia solo le maiuscole, la verifica è dichiarata non conclusiva: nessun falso avviso di vecchie occorrenze residue.
+- Un nome esatto che collide con il nome troncato di un altro font non autorizza il riuso di una risorsa ambigua. La sostituzione richiede consenso e i file restano intatti in caso di annullamento.
+- Test del focus con clic reale e digitazione da tastiera, senza il focus implicito dei metodi di compilazione dei campi.
 
 Limite esplicito: questa release non ricostruisce font completi da una scansione
 come i motori dedicati dei prodotti professionali. La correzione delle cifre non

@@ -491,11 +491,23 @@ def font_resource_supports_text(
         return False
 
 
+def span_font_name_candidates(page: fitz.Page, span_name: str) -> set:
+    """Exact and MuPDF-clipped names both compete; an exact hit is not proof."""
+    wanted = normalize_font_name(span_name)
+    names = {str(font[3]) for font in page.get_fonts(full=True)}
+    candidates = {name for name in names if normalize_font_name(name) == wanted
+                  or len(name.encode("utf-8")) > 31
+                  and normalize_font_name(name.encode("utf-8")[:31].decode("utf-8", "ignore")) == wanted}
+    return {re.sub(r"^[A-Z]{6}\+", "", name) for name in candidates}
+
+
 def font_resource_for_span(
     page: fitz.Page,
     span_font: str,
     text: str = "",
 ) -> Optional[str]:
+    if len(span_font_name_candidates(page, span_font)) > 1:
+        return None
     wanted = normalize_font_name(span_font)
     candidates: List[Tuple[int, str]] = []
 
@@ -525,7 +537,7 @@ def requested_font_resource(
     text: str = "",
     expected_name: Optional[str] = None,
 ) -> Optional[str]:
-    if not resource_name:
+    if not resource_name or expected_name is not None and len(span_font_name_candidates(page, expected_name)) > 1:
         return None
     return next(
         (
@@ -1286,12 +1298,7 @@ def canonical_span_font_name(page: fitz.Page, span_name: str) -> str:
     # MuPDF 1.26.5 clips the raw PDF font name to 31 bytes before stripping the
     # subset prefix in text extraction. Match that exact representation only;
     # never infer a font from an arbitrary family-name prefix or ambiguous set.
-    wanted = normalize_font_name(span_name)
-    names = {str(font[3]) for font in page.get_fonts(full=True)}
-    exact = {name for name in names if normalize_font_name(name) == wanted}
-    candidates = exact or {name for name in names if len(name.encode("utf-8")) > 31
-                          and normalize_font_name(name.encode("utf-8")[:31].decode("utf-8", "ignore")) == wanted}
-    full_names = {re.sub(r"^[A-Z]{6}\+", "", name) for name in candidates}
+    full_names = span_font_name_candidates(page, span_name)
     return next(iter(full_names)) if len(full_names) == 1 else span_name
 
 

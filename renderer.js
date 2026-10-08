@@ -1752,8 +1752,15 @@ async function applyCoherentEdit() {
         }),
       });
       const remaining = Array.isArray(verification.matches) ? verification.matches.length : 0;
+      // PDF search is case-insensitive. The intended replacement can itself
+      // contain the query (Rossi -> Rossi Bianchi, abc -> ABC); in that case
+      // neither a residue warning nor a clean-removal claim is justified.
+      const replacementContainsQuery = normalizedEditorText(replacementText).toLowerCase()
+        .includes(normalizedEditorText(originalText).toLowerCase());
       verificationMessage = verification.truncated
         ? " Attenzione: la ricerca ha raggiunto il limite di risultati; la verifica completa non è disponibile."
+        : replacementContainsQuery
+        ? " Il nuovo testo contiene il valore cercato: verifica non conclusiva. Controlla le occorrenze nel documento."
         : remaining === expectedRemaining
         ? ` Verifica completata: ${remaining
           ? `${remaining} ${remaining === 1 ? "occorrenza lasciata" : "occorrenze lasciate"} intenzionalmente.`

@@ -158,6 +158,32 @@ class FontEditSafetyTests(unittest.TestCase):
             doc.xref_set_key(xref, "BaseFont", "/GHIJKL+TimesNewRomanPS-BoldItalOther")
             self.assertEqual(main.canonical_span_font_name(page, "TimesNewRomanPS-BoldItal"), "TimesNewRomanPS-BoldItal")
 
+    def test_exact_name_colliding_with_a_clipped_font_never_selects_another_resource(self):
+        source, _ = self.native_fixture("ABCDEF+TimesNewRomanPS-BoldItalicMT", simple=True)
+        with fitz.open(source) as doc:
+            page = doc[0]
+            xref = page.insert_font(fontname="ExactCollision", fontfile=str(
+                main.bundled_fonts_directory() / "liberation/LiberationSerif-BoldItalic.ttf"), set_simple=True)
+            name = "GHIJKL+TimesNewRomanPS-BoldItal"
+            doc.xref_set_key(xref, "BaseFont", f"/{name}")
+            descriptor = doc.xref_get_key(xref, "FontDescriptor")[1]
+            doc.xref_set_key(int(descriptor.split()[0]), "FontName", f"/{name}")
+            page.insert_text((40, 150), "SECOND FACE", fontname="ExactCollision", fontsize=18)
+            doc.save(self.root / "collision.pdf")
+        source = self.root / "collision.pdf"
+        span = main.inspect_text(main.InspectRequest(file_path=str(source), include_ocr=False))["spans"][0]
+        self.assertEqual(span["font"], "TimesNewRomanPS-BoldItal")
+        self.assertIsNone(span["font_resource"], "A clipped name must not silently select the exact-name competitor")
+        with fitz.open(source) as doc:
+            self.assertIsNone(main.requested_font_resource(doc[0], "ExactCollision", "6", expected_name=span["font"]))
+        before = source.read_bytes()
+        with self.assertRaises(HTTPException) as caught:
+            main.edit_text(self.request(source, span, font_resource="ExactCollision"))
+        self.assertEqual(caught.exception.status_code, 409)
+        self.assertEqual(caught.exception.detail["status"], "font_substitution_required")
+        self.assertEqual(source.read_bytes(), before)
+        self.assertFalse((self.root / "result.pdf").exists())
+
     def test_base14_batch_keeps_original_font_after_redaction_on_both_pages(self):
         source = self.root / "times.pdf"
         changes = []

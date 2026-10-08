@@ -15,10 +15,14 @@ const root = path.resolve(__dirname, '..');
   const locked = path.join(documents, 'allegato protetto.pdf');
   const scanned = path.join(documents, 'scansione sintetica.pdf');
   const unknownFont = path.join(documents, 'native.pdf');
+  const containingText = path.join(documents, 'containing-text.pdf');
+  const caseText = path.join(documents, 'case-text.pdf');
   execFileSync(virtualEnvironmentPython(root), ['-c',
     'import fitz,sys; from pathlib import Path; p=Path(sys.argv[1]); d=fitz.open(); [(d.new_page().insert_text((72,72),"DATA 05/08/2026 PAGINA %d"%i)) for i in range(1,26)]; d.save(p/"relazione finale.pdf"); d.save(p/"allegato protetto.pdf",encryption=fitz.PDF_ENCRYPT_AES_256,owner_pw="owner",user_pw="test-password"); d.close(); d=fitz.open(); s=d.new_page(width=595,height=400); s.insert_text((72,140),"SCANSIONE 05/08/2026",fontsize=32); png=s.get_pixmap(matrix=fitz.Matrix(2,2),alpha=False).tobytes("png"); d.close(); d=fitz.open(); s=d.new_page(width=595,height=400); s.insert_image(s.rect,stream=png); d.save(p/"scansione sintetica.pdf"); d.close()', documents]);
   execFileSync(virtualEnvironmentPython(root), ['-c',
     'import sys; from pathlib import Path; sys.path.insert(0,"tests"); from test_font_edit_safety import FontEditSafetyTests; t=FontEditSafetyTests(); t.root=Path(sys.argv[1]); t.native_fixture(pages=2)', documents], { cwd: root });
+  execFileSync(virtualEnvironmentPython(root), ['-c',
+    'import fitz,sys; from pathlib import Path; root=Path(sys.argv[1]);\nfor name,text in [("containing-text.pdf","Rossi"),("case-text.pdf","abc")]:\n d=fitz.open();\n for _ in range(2):\n  p=d.new_page(width=400,height=250); p.insert_text((40,100),text,fontname="helv",fontsize=18)\n d.save(root/name); d.close()', documents]);
   const errors = [];
   console.log('QA: launch isolated Electron');
   const application = await _electron.launch({ executablePath: require('electron'),
@@ -74,6 +78,10 @@ const root = path.resolve(__dirname, '..');
     await page.locator('#edit-mode').click();
     await page.locator('.text-box').first().waitFor();
     await page.locator('.text-box').first().click();
+    assert.equal(await page.evaluate(() => document.activeElement?.classList.contains('inline-text-content')), true,
+      'A pointer click must focus the inline editor without a second click or fill()');
+    await page.keyboard.type('X');
+    assert.match(await page.locator('#selected-text').inputValue(), /X$/);
     await page.locator('#selected-text').fill('DATA 06/09/2026 àèéìòù €');
     await page.locator('#selected-font').fill('Liberation Sans');
     await page.getByRole('option', { name: 'Liberation Sans', exact: true }).click();
@@ -82,7 +90,9 @@ const root = path.resolve(__dirname, '..');
     await page.waitForFunction(() => document.querySelector('#status').textContent.includes('Ora puoi salvare'));
     await page.locator('.text-box[title="DATA 06/09/2026 àèéìòù €"]').waitFor();
     await page.locator('#pdf-render').click({ position: { x: 260, y: 260 } });
-    await page.locator('.inline-text-editor .inline-text-content').fill('TESTO DIRETTO 6');
+    assert.equal(await page.evaluate(() => document.activeElement?.classList.contains('inline-text-content')), true,
+      'Clicking the page must focus new text before keyboard typing');
+    await page.keyboard.type('TESTO DIRETTO 6');
     await page.locator('#page-indicator').click();
     await page.waitForFunction(() => document.querySelector('#status').textContent.includes('Testo aggiunto'));
     await page.locator('#select-object-mode.is-active').waitFor();
@@ -236,6 +246,26 @@ const root = path.resolve(__dirname, '..');
     await page.locator('.thumbnail-button[data-page-number="2"]').click();
     await page.locator('.text-box[title="06/08/2026"]').waitFor();
     console.log('QA: font substitution names, cancellation, Escape, single and atomic batch consent verified.');
+    for (const [file, original, replacement] of [
+      [containingText, 'Rossi', 'Rossi Bianchi'],
+      [caseText, 'abc', 'ABC'],
+    ]) {
+      await page.locator('#pdf-file-input').setInputFiles(file);
+      await page.waitForFunction(() => document.querySelector('#status').textContent.includes('PDF caricato'));
+      await page.locator('#edit-mode').click();
+      await page.locator(`.text-box[title="${original}"]`).click();
+      await page.locator('#selected-text').fill(replacement);
+      await page.locator('#coherent-edit').click();
+      await page.locator('#coherent-dialog[open]').waitFor();
+      await page.locator('#apply-coherent-edit').click();
+      await page.waitForFunction(() => document.querySelector('#status').textContent.includes('2 occorrenze aggiornate')
+        && document.querySelector('#status').textContent.includes('verifica non conclusiva'));
+      assert.doesNotMatch(await page.locator('#status').textContent(), /occorrenze residue|il vecchio valore non è più presente/);
+      await page.locator(`.text-box[title="${replacement}"]`).waitFor();
+      await page.locator('.thumbnail-button[data-page-number="2"]').click();
+      await page.locator(`.text-box[title="${replacement}"]`).waitFor();
+    }
+    console.log('QA: containing replacements and case-only changes never produce a false residue warning.');
     assert.deepEqual(errors, []);
     console.log('Electron UI QA OK: open, edit, font preview, page 25, bounded thumbnails, password-protected insertion, IPC boundary.');
   } catch (error) {
